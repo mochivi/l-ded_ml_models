@@ -120,7 +120,7 @@ class DF_Creator:
 
 class DF_Reader:
 
-    def __init__(self, filepath='C:\Users\victo\Programming\l-ded_ml_models\files\\df_xpos_images.csv', shuffle=True, reduce=None) -> None:
+    def __init__(self, filepath='C:\\Users\\victo\\Programming\\l-ded_ml_models\\files\\df_xpos_images.csv', shuffle=True, reduce=None) -> None:
         self.df = pd.read_csv(filepath, index_col=0)
 
         #Reset index and drop null values
@@ -216,7 +216,7 @@ class Pipeline:
             subset ='training',
             class_mode = 'raw',
             color_mode = 'rgb',
-            shuffle=True
+            shuffle=False
         )
         valid_generator = self.train_datagen.flow_from_dataframe(
             dataframe = train_df.drop(columns=['standoff distance', 'x pos']),
@@ -227,7 +227,7 @@ class Pipeline:
             class_mode = 'raw',
             color_mode = 'rgb',
             subset = 'validation',
-            shuffle=True
+            shuffle=False
         )
         test_generator = self.test_datagen.flow_from_dataframe(
             dataframe = test_df.drop(columns=['standoff distance', 'x pos']),
@@ -242,8 +242,8 @@ class Pipeline:
         return train_generator, valid_generator, test_generator
 
 class CNN_model:
-    def __init__(self, filepath='C:\Users\victo\Programming\l-ded_ml_models\files\\df_xpos_images.csv') -> None:
-        self.df_reader = DF_Reader(flepath=filepath)
+    def __init__(self, filepath='C:\\Users\\victo\\Programming\\l-ded_ml_models\\files\\df_xpos_images.csv') -> None:
+        self.df_reader = DF_Reader(filepath=filepath)
         self.df = self.df_reader.df
         self.train_df = self.df_reader.train_df
         self.test_df = self.df_reader.test_df
@@ -284,10 +284,12 @@ class CNN_model:
             #del(cur_layer)
         return l
 
-    def grid_train(self, layers, params_grid, pooling):
+    def grid_train(self, params_grid, layers, pooling):
         histories = []
         evaluations = []
         predictions = []
+
+        print('params grid:', params_grid)
 
         for params in params_grid.values():
             history, evaluation, prediction = self.train(params, layers=layers, pooling=pooling)
@@ -408,6 +410,12 @@ class CNN_model:
         eval_tuples = list(zip(self.test_df['standoff distance'], self.test_df['width'], self.test_df['x pos'], prediction))
         self.eval_results_df = pd.DataFrame(eval_tuples, columns=['standoff distance', 'true', 'x pos', 'pred'])
 
+        #Fix the prediction column which comes inside a list for some fucking reason
+        self.eval_results_df['pred'] = self.eval_results_df['pred'].apply(lambda x: x[0])
+
+        #save eval results df to disk
+        self.eval_results_df.to_csv(directory + '\\eval_results_df.csv')
+
         #Create other plots
         self.save_true_vs_pred_plot(directory)
         self.save_mean_true_vs_pred_plot(directory)
@@ -419,10 +427,13 @@ class CNN_model:
             pickle.dump(history.history, file_pi)
 
     def save_model_params(self, params, directory):
-        params['shape'] = str(params['shape'])
-        model_params_df = pd.DataFrame.from_dict(params, orient='columns')
-        model_params_df.drop(columns='layers', inplace=True)
-        model_params_df.to_csv(directory + '\\model_params.csv')
+        print(f"params: {params}")
+        try:
+            model_params_df = pd.DataFrame.from_dict(params, orient='columns')
+            model_params_df.drop(columns='layers', inplace=True)
+            model_params_df.to_csv(directory + '\\model_params.csv')
+        except:
+            print('Error on saving model params')
 
     def save_model_summary(self, model, directory):
         summary_path = directory + '\\modelsummary.txt'
@@ -439,7 +450,7 @@ class CNN_model:
         plt.ylim([0, np.median(history.history['mse']) * 3])
         plt.legend(loc='lower right')
         plt.savefig(mse_plot_path)
-        plt.show()
+        plt.close()
 
     def save_mae_plot(self, history, directory):
         mae_plot_name = '\\history_mae_plot.png'
@@ -451,7 +462,7 @@ class CNN_model:
         plt.ylim([0, np.median(history.history['mae']) * 3])
         plt.legend(loc='lower right')
         plt.savefig(mae_plot_path)
-        plt.show()
+        plt.close()
 
     def save_r2_plot(self, history, directory):
         r2_plot_name = '\\history_r2_plot.png'
@@ -463,14 +474,14 @@ class CNN_model:
         plt.ylim([0, 1])
         plt.legend(loc='lower right')
         plt.savefig(r2_plot_path)
-        plt.show()
+        plt.close()
 
     def save_true_vs_pred_plot(self, directory):
         true_vs_pred_plot_name = '\\true_vs_pred_lineplot.png'
         true_vs_pred_plot_path = directory + true_vs_pred_plot_name
 
         #Create the true vs pred plot
-        sns.lmplot(data=self.eval_results_df, x='true', y='pred')#, s=5, color='b')
+        sns.scatterplot(data=self.eval_results_df, x='true', y='pred', s=5, color='b')
         sns.lineplot(x=np.arange(self.eval_results_df['true'].min(), self.eval_results_df['true'].max()), y=np.arange(self.eval_results_df['true'].min(), self.eval_results_df['true'].max()), color='black')
         
         #Define lower, upper bounds for x and y
@@ -481,7 +492,7 @@ class CNN_model:
         
         #Save and show figure
         plt.savefig(true_vs_pred_plot_path)
-        plt.show()
+        plt.close()
 
     def save_mean_true_vs_pred_plot(self, directory):
         standoff_x_plot_name = '\\standoff_x_lineplot.png'
@@ -493,7 +504,7 @@ class CNN_model:
         sns.lineplot(data=standoff_grouped_true, x=standoff_grouped_true.index, y='pred', color='black', label='pred mean')
         plt.legend(loc='lower right')
         plt.savefig(standoff_x_plot_path)
-        plt.show()
+        plt.close()
 
     def save_width_over_x_plot(self, directory, adjusted=False):
         standoff_distances_folder = directory + '\\plots_standoff_distance'
@@ -568,17 +579,7 @@ def params_grid_creator(base_models, loss_functions, optimizers_list, learning_r
     #Write the dict for each iteration
     def inner_dict(base_model, loss_function, optimizer, learning_rate, input_shape, epochs, batch_size):
         d = {}
-        '''layers = [Flatten(),
-                    #Dropout(rate=0.2),
-                    Dense(32, activation='relu'),
-                    Dropout(rate=0.25),
-                    Dense(16, activation='relu'),
-                    Dropout(rate=0.10),
-                    Dense(8, activation='relu'),
-                    Dense(1, activation='linear')]
-        print('new layers:', layers)'''
         d['base model'] = base_model
-        #d['layers'] = layers
         d['loss function'] = loss_function
         d['optimizer'] = optimizer
         d['learning rate'] =  learning_rate
@@ -625,12 +626,12 @@ def params_grid_creator(base_models, loss_functions, optimizers_list, learning_r
             raise Exception("Key not removed")
             
     #Now add the layers to each value in the dict
-    for key, value in grid.items():
+    '''for key in grid.keys():
         grid[key]['layers'] = [Flatten(),
-                                Dense(64, activation='relu'),
-                                Dense(128, activation='relu'),
-                                Dense(32, activation='relu'),
-                                Dense(1, activation='linear')]
+            Dense(64, activation='relu'),
+            Dense(128, activation='relu'),
+            Dense(32, activation='relu'),
+            Dense(1, activation='linear')]'''
     
     #Display the grid for the user
     print(pd.DataFrame(grid))
@@ -642,4 +643,3 @@ def params_grid_creator(base_models, loss_functions, optimizers_list, learning_r
         return grid
     else:
         raise Exception("Mismatched number of iterations")
-    return grid
