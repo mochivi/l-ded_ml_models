@@ -10,6 +10,7 @@ import random
 import pickle
 import scipy
 from datetime import datetime
+from typing import Tuple
 
 import tensorflow as tf
 from tensorflow import keras
@@ -39,6 +40,14 @@ pd.options.mode.chained_assignment = None # default = 'warn'
 
 #GLOBAL PARAMS
 PRED_COLUMN = 'width'
+
+class Regression_Creator():
+    '''
+    Input: d_befone_spline.csv
+    Output: saves altered images to drive with the regression values to their filenames
+    '''
+    def __init__(self) -> None:
+        pass
 
 class DF_Creator:
 
@@ -104,8 +113,56 @@ class DF_Creator:
             self.df.loc[index, 'width'] = width_float
             self.df.loc[index, 'x pos'] = x_pos_float
 
+    #Saves the dataframe to the save_path
     def save_df(self, save_path):
         self.df.to_csv(save_path)
+
+class DF_Reader:
+
+    def __init__(self, filepath='D:\\Users\\Victor\\Área de Trabalho\\train_history\\df\\df_xpos_images.csv', shuffle=True, reduce=None) -> None:
+        self.df = pd.read_csv(filepath, index_col=0)
+
+        #Reset index and drop null values
+        self.df.reset_index(drop=True, inplace=True)
+        self.df.dropna(subset='width', inplace=True)
+        
+        #If use samples dataset
+        if reduce is not None:
+            self.df = self.reduce_dataset(reduce)
+        
+        #Create train test dfs
+        self.train_df, self.test_df = self.create_train_test_dfs()
+
+        #Shuffle train test dfs inplace
+        self.shuffle_train_test_dfs()
+
+    #Create the train, test dataframes
+    def create_train_test_dfs(self) -> Tuple:
+        train_df = pd.DataFrame()
+        test_df = pd.DataFrame()
+
+        #Create test columns and make sure they are balanced
+        for index, inner_df in self.df.groupby(by='standoff distance'):
+            inner_train_df, inner_test_df = train_test_split(inner_df, test_size=0.2)
+            train_df = train_df.append(inner_train_df)
+            test_df = test_df.append(inner_test_df)
+
+        #Reset indexes of train and test datasets
+        train_df.reset_index(drop=True, inplace=True)
+        test_df.reset_index(drop=True, inplace=True)
+
+        return train_df, test_df
+
+    #Shuffle the dataframes
+    def shuffle_train_test_dfs(self):
+        self.train_df = shuffle(self.train_df)
+        self.test_df = shuffle(self.test_df)
+        self.df = shuffle(self.df)
+
+    def reduce_dataset(self, reduce) -> pd.DataFrame:
+        sampled_df = self.df.sample(n=reduce)
+        sampled_df.reset_inedx(drop=True, inplace=True)
+        return sampled_df
 
 #Read the dataframe from memory if it was already created once
 def read_df_drom_memory(filepath) -> pd.DataFrame:
