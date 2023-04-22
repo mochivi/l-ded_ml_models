@@ -1,14 +1,27 @@
-
-
 from helpers import *
 
-def main():
-    save_path = 'D:\\Users\\Victor\\Área de Trabalho\\train_history\\df\\df_xpos_images.csv'
-    read_path = 'C:\\Users\\victo\\Programming\\l-ded_ml_models\\files\\df_xpos_images.csv'
-    #df_creator = DF_Creator(save_path=save_path)
-    df_reader = DF_Reader(filepath=read_path)
+def main():    
+    layers_str = [#['flatten'],
+        ['dense', 256, 'relu'],
+        ['dropout', 0.25],
+        ['dense', 512, 'relu'],
+        ['dropout', 0.25],
+        ['dense', 128, 'relu'],
+        ['dropout', 0.15],
+        ['dense', 64, 'relu'],
+        ['dropout', 0.10],
+        ['dense', 1, 'linear']]
 
-    print(f"train_df shape: {df_reader.train_df.shape}, test_df shape: {df_reader.test_df.shape}")
+    params_grid = params_grid_creator(base_models = ['vgg16'],
+                                    loss_functions = ['mae'],
+                                    optimizers_list = ['adam'],
+                                    learning_rates = [0.0005],
+                                    input_shapes = [(170,170,3)],
+                                    epochs_list = [5],
+                                    batch_sizes = [32])
+
+    cnn = CNN_model()
+    cnn.grid_train(params_grid, layers_str, pooling='avg')
 
 if __name__ == '__main__':
     main()

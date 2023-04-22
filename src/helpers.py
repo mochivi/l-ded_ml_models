@@ -40,8 +40,9 @@ pd.options.mode.chained_assignment = None # default = 'warn'
 
 #GLOBAL PARAMS
 PRED_COLUMN = 'width'
+X_COL = 'img_path'
 
-class Regression_Creator():
+class Regression_Creator:
     '''
     Input: d_befone_spline.csv
     Output: saves altered images to drive with the regression values to their filenames
@@ -119,7 +120,7 @@ class DF_Creator:
 
 class DF_Reader:
 
-    def __init__(self, filepath='D:\\Users\\Victor\\Área de Trabalho\\train_history\\df\\df_xpos_images.csv', shuffle=True, reduce=None) -> None:
+    def __init__(self, filepath='C:\Users\victo\Programming\l-ded_ml_models\files\\df_xpos_images.csv', shuffle=True, reduce=None) -> None:
         self.df = pd.read_csv(filepath, index_col=0)
 
         #Reset index and drop null values
@@ -164,24 +165,481 @@ class DF_Reader:
         sampled_df.reset_inedx(drop=True, inplace=True)
         return sampled_df
 
-#Read the dataframe from memory if it was already created once
-def read_df_drom_memory(filepath) -> pd.DataFrame:
-    #df = pd.read_csv('D:/Users/Victor/Área de Trabalho/train_history/df' + '/df_new_xpos_images.csv', index_col=0)
-    df = pd.read_csv(filepath, index_col=0)
-    return df
+#This class creates the ImageDataGenerator generators
+class Pipeline:
 
-class CNN_model():
-    def __init__(self) -> None:
-        pass
+    def __init__(self, preprocessing_function, train_df, test_df, target_size, batch_size, feature_extraction=False, data_augmentation=False) -> None:
+        self.preprocessing_function = preprocessing_function
+        self.feature_extraction = feature_extraction
+        self.data_augment = data_augmentation
 
-    def create_datagens(self):
-        pass
+        self.train_datagen, self.test_datagen = self.create_datagens()
+        self.train_generator, self.valid_generator, self.test_generator = self.create_generators(train_df, test_df, target_size, batch_size)
 
-    def create_feature_extraction_generator(self):
-        pass
+    def create_datagens(self, rescale=(1/255.0), val_split=0.2):
+        #If extract features from the CNN
+        if self.feature_extraction:
+            feature_extraction_datagen = ImageDataGenerator(
+                rescale = rescale,
+                preprocessing_function = self.preprocessing_function)
+            return feature_extraction_datagen
 
-    def create_generators(self):
-        pass
+        #Train datagen
+        #Augment data for the training dataset
+        if self.data_augment:
+            train_datagen = ImageDataGenerator(
+                rescale = rescale,
+                validation_split = val_split,
+                preprocessing_function = self.preprocessing_function,
+                rotation_range = 120,
+                horizontal_flip = True,
+                vertical_flip = True)
+        else:
+            train_datagen = ImageDataGenerator(
+                rescale = rescale,
+                validation_split = val_split,
+                preprocessing_function = self.preprocessing_function)
+        
+        #Test datagen
+        test_datagen = ImageDataGenerator(
+            rescale = rescale,
+            preprocessing_function = self.preprocessing_function)    
+        return train_datagen, test_datagen
 
-    def create_model(self):
-        pass
+    def create_generators(self, train_df, test_df, target_size, batch_size):
+        train_generator = self.train_datagen.flow_from_dataframe(
+            dataframe = train_df.drop(columns=['standoff distance', 'x pos']),
+            x_col = X_COL,
+            y_col = PRED_COLUMN,
+            target_size = target_size,
+            batch_size = batch_size,
+            subset ='training',
+            class_mode = 'raw',
+            color_mode = 'rgb',
+            shuffle=True
+        )
+        valid_generator = self.train_datagen.flow_from_dataframe(
+            dataframe = train_df.drop(columns=['standoff distance', 'x pos']),
+            x_col = X_COL,
+            y_col = PRED_COLUMN,
+            target_size = target_size,
+            batch_size = batch_size,
+            class_mode = 'raw',
+            color_mode = 'rgb',
+            subset = 'validation',
+            shuffle=True
+        )
+        test_generator = self.test_datagen.flow_from_dataframe(
+            dataframe = test_df.drop(columns=['standoff distance', 'x pos']),
+            x_col = X_COL,
+            y_col = PRED_COLUMN,
+            target_size = target_size,
+            batch_size = batch_size,
+            class_mode = 'raw',
+            color_mode = 'rgb',
+            shuffle=False
+        )
+        return train_generator, valid_generator, test_generator
+
+class CNN_model:
+    def __init__(self, filepath='C:\Users\victo\Programming\l-ded_ml_models\files\\df_xpos_images.csv') -> None:
+        self.df_reader = DF_Reader(flepath=filepath)
+        self.df = self.df_reader.df
+        self.train_df = self.df_reader.train_df
+        self.test_df = self.df_reader.test_df
+
+    def create_model(self, base_model, custom_layers, feature_extraction=False):
+        #Make it so the base model layers are untrainable
+        base_model.trainable = False
+
+        #Create the new model
+        self.model = Sequential()
+        self.model.add(base_model)
+        
+        if feature_extraction:
+            return self.model
+
+        #Add custom layers to model
+        for custom_layer in custom_layers:
+            self.model.add(custom_layer)
+
+        return self.model
+
+    def create_layers(self, layers):
+        if layers == None:
+            return None
+        
+        l = []
+        for layer in layers:
+            layer_type = layer[0]
+            if layer_type == 'flatten':
+                cur_layer = Flatten()
+            elif layer_type == 'dense':
+                cur_layer = Dense(layer[1], activation=layer[2])
+            elif layer_type == 'dropout':
+                cur_layer = Dropout(rate=layer[1])
+            else:
+                raise Exception("no layer named flatten, dense or dropout")
+            l.append(cur_layer)
+            #del(cur_layer)
+        return l
+
+    def grid_train(self, layers, params_grid, pooling):
+        histories = []
+        evaluations = []
+        predictions = []
+
+        for params in params_grid.values():
+            history, evaluation, prediction = self.train(params, layers=layers, pooling=pooling)
+
+            #Append to list
+            histories.append(history)
+            evaluations.append(evaluation)
+            predictions.append(prediction)
+
+        return histories, evaluations, predictions
+
+    def base_model_mapping(self, base_model_str, pooling, input_shape_tuple):
+        if base_model_str == 'vgg16':
+            base_model = vgg16.VGG16(weights='imagenet', include_top=False, pooling=pooling, input_shape=input_shape_tuple)
+            preprocessing_function = vgg16.preprocess_input
+        elif base_model_str == 'resnet50':
+            base_model = ResNet50(weights='imagenet', include_top=False, pooling=pooling, input_shape=input_shape_tuple)
+            preprocessing_function = resnet.preprocess_input
+        elif base_model_str == 'resnet101':
+            base_model = ResNet101(weights='imagenet', include_top=False, pooling=pooling, input_shape=input_shape_tuple)
+            preprocessing_function = resnet.preprocess_input
+        elif base_model_str == 'resnet152':
+            base_model = ResNet152(weights='imagenet', include_top=False, pooling=pooling, input_shape=input_shape_tuple)
+            preprocessing_function = resnet.preprocess_input
+        elif base_model_str == 'densenet169':
+            base_model = DenseNet169(weights='imagenet', include_top=False, pooling=pooling, input_shape=input_shape_tuple)
+            preprocessing_function = densenet.preprocess_input
+        elif base_model_str == 'densenet201':
+            base_model = DenseNet201(weights='imagenet', include_top=False, pooling=pooling, input_shape=input_shape_tuple)
+            preprocessing_function = densenet.preprocess_input
+        
+        else:
+            raise Exception("base model not supported")
+
+        return base_model, preprocessing_function
+
+    def train(self, params, layers, pooling, feature_extraction=False, data_augmentation=False):
+        #Print statistics
+        print()
+        print('input shape:', params['shape'])
+        print('optimizer', params['optimizer'])
+        print('loss function', params['loss function'])
+        print('learning rate', params['learning rate'])
+        print('batch size', params['batch size'])
+
+        #Create the model
+        base_model, preprocessing_function = self.base_model_mapping(params['base model'], pooling, params['shape'])
+        model = self.create_model(base_model, self.create_layers(layers))
+
+        #Create the generators based on the input shape
+        pipeline = Pipeline(preprocessing_function, self.train_df, self.test_df, params['shape'][:2], params['batch size'], feature_extraction=False, data_augmentation=data_augmentation)
+        train_steps, valid_steps, test_steps = pipeline.train_generator.samples // params['batch size'], pipeline.valid_generator.samples // params['batch size'], pipeline.test_generator.samples // params['batch size']
+
+        #Optimizer and loss function
+        if params['optimizer'] == 'adam':
+            optimizer = optimizers.Adam(learning_rate=params['learning rate'])
+        elif params['optimizer'] == 'rms':
+            optimizer = optimizers.RMSprop(learning_rate=params['learning rate'])
+
+        #Loss function definition
+        loss_function = params['loss function']
+        if loss_function == 'huber_loss':
+            loss_function = tf.keras.losses.Huber(delta=5.0)
+
+        #Adaptive learning rate
+        my_lr_scheduler = keras.callbacks.LearningRateScheduler(adapt_learning_rate)
+        
+        #Compile the model
+        model.compile(optimizer=optimizer, loss=loss_function, metrics=['mae', 'mse', tf.keras.metrics.RootMeanSquaredError(), tf.keras.metrics.MeanAbsolutePercentageError(), r2])
+        model.summary()
+
+        #Train the model
+        history = model.fit(pipeline.train_generator, 
+                            epochs = params['epochs'], 
+                            batch_size = params['batch size'],
+                            steps_per_epoch = train_steps, 
+                            validation_data = pipeline.valid_generator, 
+                            validation_steps = valid_steps, 
+                            callbacks=[my_lr_scheduler], verbose=1)
+        
+        #Evaluate the model
+        evaluation = model.evaluate(pipeline.test_generator,
+                                    batch_size = params['batch size'],
+                                    verbose = 'auto',
+                                    steps = test_steps,
+                                    return_dict=True)
+        
+        prediction = model.predict(pipeline.test_generator,
+                                batch_size = params['batch size'])
+
+        #save model
+        self.save_history(history, evaluation, prediction, params, model)
+            
+        return model, history, evaluation, prediction
+
+    def save_history(self, history, evaluation, prediction, params, model):
+
+        #Create directory for all information to be stored in
+        datetime_str = str(datetime.now().strftime('%Y-%m-%d_%H_%M_%S'))
+        directory = 'D:\\Users\\Victor\\Área de Trabalho\\train_history\\history_' + datetime_str
+        os.mkdir(directory)
+
+        #Save history as pkl file to directory
+        self.save_pickle_history(history, directory)
+
+        #Save dataframe with the model parameters
+        self.save_model_params(params, directory)
+
+        #Save model summary txt
+        self.save_model_summary(model, directory)
+
+        #Save mse, mae and r2 plots
+        self.save_mse_plot(history, directory)
+        self.save_mae_plot(history, directory)
+        self.save_r2_plot(history, directory)
+
+        #Create eval_results_df
+        eval_tuples = list(zip(self.test_df['standoff distance'], self.test_df['width'], self.test_df['x pos'], prediction))
+        self.eval_results_df = pd.DataFrame(eval_tuples, columns=['standoff distance', 'true', 'x pos', 'pred'])
+
+        #Create other plots
+        self.save_true_vs_pred_plot(directory)
+        self.save_mean_true_vs_pred_plot(directory)
+        self.save_width_over_x_plot(directory, adjusted=True)
+
+    def save_pickle_history(self, history, directory):
+        pickle_filename = directory + '\\history.pkl'
+        with open(pickle_filename , 'wb') as file_pi:
+            pickle.dump(history.history, file_pi)
+
+    def save_model_params(self, params, directory):
+        params['shape'] = str(params['shape'])
+        model_params_df = pd.DataFrame.from_dict(params, orient='columns')
+        model_params_df.drop(columns='layers', inplace=True)
+        model_params_df.to_csv(directory + '\\model_params.csv')
+
+    def save_model_summary(self, model, directory):
+        summary_path = directory + '\\modelsummary.txt'
+        with open(summary_path, 'w') as f:
+            model.summary(print_fn=lambda x: f.write(x + '\n'))
+
+    def save_mse_plot(self, history, directory):
+        mse_plot_name = '\\history_mse_plot.png'
+        mse_plot_path = directory + mse_plot_name
+        plt.plot(history.history['mse'], label='mse')
+        plt.plot(history.history['val_mse'], label='val_mse')
+        plt.xlabel('Epoch')
+        plt.ylabel('Mean Squared Error')
+        plt.ylim([0, np.median(history.history['mse']) * 3])
+        plt.legend(loc='lower right')
+        plt.savefig(mse_plot_path)
+        plt.show()
+
+    def save_mae_plot(self, history, directory):
+        mae_plot_name = '\\history_mae_plot.png'
+        mae_plot_path = directory + mae_plot_name
+        plt.plot(history.history['mae'], label='mae')
+        plt.plot(history.history['val_mae'], label='val_mae')
+        plt.xlabel('Epoch')
+        plt.ylabel('Mean Average Error')
+        plt.ylim([0, np.median(history.history['mae']) * 3])
+        plt.legend(loc='lower right')
+        plt.savefig(mae_plot_path)
+        plt.show()
+
+    def save_r2_plot(self, history, directory):
+        r2_plot_name = '\\history_r2_plot.png'
+        r2_plot_path = directory + r2_plot_name
+        plt.plot(history.history['r2'], label='r2_score')
+        plt.plot(history.history['val_r2'], label='val_r2_score')
+        plt.xlabel('Epoch')
+        plt.ylabel('R2 Score')
+        plt.ylim([0, 1])
+        plt.legend(loc='lower right')
+        plt.savefig(r2_plot_path)
+        plt.show()
+
+    def save_true_vs_pred_plot(self, directory):
+        true_vs_pred_plot_name = '\\true_vs_pred_lineplot.png'
+        true_vs_pred_plot_path = directory + true_vs_pred_plot_name
+
+        #Create the true vs pred plot
+        sns.lmplot(data=self.eval_results_df, x='true', y='pred')#, s=5, color='b')
+        sns.lineplot(x=np.arange(self.eval_results_df['true'].min(), self.eval_results_df['true'].max()), y=np.arange(self.eval_results_df['true'].min(), self.eval_results_df['true'].max()), color='black')
+        
+        #Define lower, upper bounds for x and y
+        xy_min = min(self.eval_results_df['true'].min(), self.eval_results_df['pred'].min())
+        xy_max = max(self.eval_results_df['true'].max(), self.eval_results_df['pred'].max())
+        plt.xlim([xy_min, xy_max])
+        plt.ylim([xy_min, xy_max])
+        
+        #Save and show figure
+        plt.savefig(true_vs_pred_plot_path)
+        plt.show()
+
+    def save_mean_true_vs_pred_plot(self, directory):
+        standoff_x_plot_name = '\\standoff_x_lineplot.png'
+        standoff_x_plot_path = directory + standoff_x_plot_name
+
+        standoff_grouped_true = self.eval_results_df.groupby('standoff distance')['true', 'pred'].mean()
+        sns.scatterplot(data=self.eval_results_df, x='standoff distance', y='pred', s=5, color='b', label='predicted points')
+        sns.lineplot(data=standoff_grouped_true, x=standoff_grouped_true.index, y='true', color='g', label='true mean')
+        sns.lineplot(data=standoff_grouped_true, x=standoff_grouped_true.index, y='pred', color='black', label='pred mean')
+        plt.legend(loc='lower right')
+        plt.savefig(standoff_x_plot_path)
+        plt.show()
+
+    def save_width_over_x_plot(self, directory, adjusted=False):
+        standoff_distances_folder = directory + '\\plots_standoff_distance'
+        os.mkdir(standoff_distances_folder)
+
+        for standoff_distance, df in self.eval_results_df.groupby(by='standoff distance'):
+            df.sort_values(by='x pos', inplace=True, ascending=True)
+            
+            plt.figure(figsize=(20,6))
+            plt.ylim([600,1050])
+            
+            sns.pointplot(data=df, x='x pos', y='true', color='black', label='true')
+            sns.pointplot(data=df, x='x pos', y='pred', color='orange', label='pred')
+            
+            plt.xticks(rotation=45)
+            plt.locator_params(axis='x', nbins=5)
+            plt.title(f'standoff distance: {standoff_distance}')
+            plt.legend(loc='lower right')
+
+            #save each file to folder
+            curr_standoff_dist_plot_path = f'\\{standoff_distance}.png'
+            plt.savefig(standoff_distances_folder + curr_standoff_dist_plot_path)
+            plt.close()
+        
+        if adjusted:
+            for standoff_distance, df in self.eval_results_df.groupby(by='standoff distance'):
+                df.sort_values(by='x pos', inplace=True, ascending=True)
+
+                #figure configs
+                plt.figure(figsize=(20,6))
+                plt.ylim([-550,550])
+
+                #calculate adjusted y values
+                true_over = df['true'].to_numpy() / 2
+                true_under = df['true'].to_numpy() / -2
+                pred_over = df['pred'].to_numpy() / 2
+                pred_under = df['pred'].to_numpy() / -2
+
+                #plot data
+                sns.lineplot(x=np.linspace(0, 135.33, df.shape[0]).astype('int'), y=true_over, color='black', label='true over')
+                sns.lineplot(x=np.linspace(0, 135.33, df.shape[0]).astype('int'), y=pred_over, color='orange', label='pred over')
+                sns.lineplot(x=np.linspace(0, 135.33, df.shape[0]).astype('int'), y=true_under, color='black', label='true under')
+                sns.lineplot(x=np.linspace(0, 135.33, df.shape[0]).astype('int'), y=pred_under, color='orange', label='pred under')
+
+                #plot configs
+                plt.locator_params(axis='x', nbins=13)
+                plt.legend()
+                plt.title(f'standoff distance: {standoff_distance}')
+                
+                #save each file to folder
+                curr_standoff_dist_plot_path = f'\\scaled_{standoff_distance}.png'
+                plt.savefig(standoff_distances_folder + curr_standoff_dist_plot_path)
+                plt.close()
+
+#Adaptive learning rate
+def adapt_learning_rate(epoch, lr):
+    if epoch < 8:
+        return lr
+    else:
+        return lr * tf.math.exp(-0.1)
+
+#R2 calculation for metrics
+def r2(y_true, y_pred):
+    SS_res =  K.sum(K.square( y_true-y_pred ))
+    SS_tot = K.sum(K.square( y_true - K.mean(y_true) ) )
+    return ( 1 - SS_res/(SS_tot + K.epsilon()))
+
+def params_grid_creator(base_models, loss_functions, optimizers_list, learning_rates, input_shapes, epochs_list, batch_sizes):
+    grid = {}
+    count = 0
+    
+    #Write the dict for each iteration
+    def inner_dict(base_model, loss_function, optimizer, learning_rate, input_shape, epochs, batch_size):
+        d = {}
+        '''layers = [Flatten(),
+                    #Dropout(rate=0.2),
+                    Dense(32, activation='relu'),
+                    Dropout(rate=0.25),
+                    Dense(16, activation='relu'),
+                    Dropout(rate=0.10),
+                    Dense(8, activation='relu'),
+                    Dense(1, activation='linear')]
+        print('new layers:', layers)'''
+        d['base model'] = base_model
+        #d['layers'] = layers
+        d['loss function'] = loss_function
+        d['optimizer'] = optimizer
+        d['learning rate'] =  learning_rate
+        d['shape'] = input_shape
+        d['epochs'] = epochs
+        d['batch size'] = batch_size
+        return d
+    
+    #Loop over each list in the input and create a separate 
+    for batch_size in batch_sizes:
+        for epochs in epochs_list:
+            for input_shape in input_shapes:
+                for learning_rate in learning_rates:
+                    for optimizer in optimizers_list:
+                        for loss_function in loss_functions:
+                            for base_model in base_models:
+                                grid[str(count)] = inner_dict(base_model, loss_function, optimizer, learning_rate, input_shape, epochs, batch_size)
+                                count += 1
+                            grid[str(count)] = inner_dict(base_model, loss_function, optimizer, learning_rate, input_shape, epochs, batch_size)
+                            count += 1
+                        grid[str(count)] = inner_dict(base_model, loss_function, optimizer, learning_rate, input_shape, epochs, batch_size)
+                        count += 1
+                    grid[str(count)] = inner_dict(base_model, loss_function, optimizer, learning_rate, input_shape, epochs, batch_size)
+                    count += 1
+                grid[str(count)] = inner_dict(base_model, loss_function, optimizer, learning_rate, input_shape, epochs, batch_size)
+                count += 1
+            grid[str(count)] = inner_dict(base_model, loss_function, optimizer, learning_rate, input_shape, epochs, batch_size)
+            count += 1
+        grid[str(count)] = inner_dict(base_model, loss_function, optimizer, learning_rate, input_shape, epochs, batch_size)
+        count += 1
+    
+    #Find a way to compare the function calls
+    key_to_remove = set()
+    for key in grid.keys():
+        try:
+            if grid[key] == grid[str(int(key) + 1)]:
+                key_to_remove.add(str(int(key) +1))
+        except:
+            break
+    
+    for key in key_to_remove:
+        remove = grid.pop(key, False)
+        if remove == False:
+            raise Exception("Key not removed")
+            
+    #Now add the layers to each value in the dict
+    for key, value in grid.items():
+        grid[key]['layers'] = [Flatten(),
+                                Dense(64, activation='relu'),
+                                Dense(128, activation='relu'),
+                                Dense(32, activation='relu'),
+                                Dense(1, activation='linear')]
+    
+    #Display the grid for the user
+    print(pd.DataFrame(grid))
+    
+    #Calculate number of iterations and ensure the result is in line with the inputs, otherwise raise an error
+    number_of_iterations = len(base_models) * len(loss_functions) * len(optimizers_list) * len(learning_rates) * len(input_shapes) * len(epochs_list) * len(batch_sizes)
+    if number_of_iterations == len(grid):
+        print('number of iterations:', number_of_iterations)
+        return grid
+    else:
+        raise Exception("Mismatched number of iterations")
+    return grid
