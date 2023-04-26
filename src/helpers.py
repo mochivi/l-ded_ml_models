@@ -144,7 +144,7 @@ class DF_Reader:
 
         #Create test columns and make sure they are balanced
         for index, inner_df in self.df.groupby(by='standoff distance'):
-            inner_train_df, inner_test_df = train_test_split(inner_df, test_size=0.2)
+            inner_train_df, inner_test_df = train_test_split(inner_df, test_size=0.2, shuffle=False)
             train_df = train_df.append(inner_train_df)
             test_df = test_df.append(inner_test_df)
 
@@ -162,21 +162,27 @@ class DF_Reader:
 
     def reduce_dataset(self, reduce) -> pd.DataFrame:
         sampled_df = self.df.sample(n=reduce)
-        sampled_df.reset_inedx(drop=True, inplace=True)
+        sampled_df.reset_index(drop=True, inplace=True)
         return sampled_df
 
 #This class creates the ImageDataGenerator generators
 class Pipeline:
 
-    def __init__(self, preprocessing_function, train_df, test_df, target_size, batch_size, feature_extraction=False, data_augmentation=False) -> None:
-        self.preprocessing_function = preprocessing_function
-        self.feature_extraction = feature_extraction
+    def __init__(self, data_augmentation=False) -> None:
         self.data_augment = data_augmentation
 
-        self.train_datagen, self.test_datagen = self.create_datagens()
-        self.train_generator, self.valid_generator, self.test_generator = self.create_generators(train_df, test_df, target_size, batch_size)
+    def set_cnn_pipeline(self, preprocessing_function, train_df, test_df, target_size, batch_size, feature_extraction) -> None:
+        self.feature_extraction = feature_extraction
+        self.preprocessing_function = preprocessing_function
 
-    def create_datagens(self, rescale=(1/255.0), val_split=0.2):
+        if self.feature_extraction:
+            self.feature_extraction_datagen = self.create_datagens()
+            self.train_feature_generator, self.test_feature_generator = self.create_feature_extraction_generators(train_df, test_df, target_size, batch_size)
+        else:
+            self.train_datagen, self.test_datagen = self.create_datagens()
+            self.train_generator, self.valid_generator, self.test_generator = self.create_generators(train_df, test_df, target_size, batch_size)
+
+    def create_datagens(self, rescale=(1/255.0), val_split=0.2) -> Tuple:
         #If extract features from the CNN
         if self.feature_extraction:
             feature_extraction_datagen = ImageDataGenerator(
@@ -206,7 +212,29 @@ class Pipeline:
             preprocessing_function = self.preprocessing_function)    
         return train_datagen, test_datagen
 
-    def create_generators(self, train_df, test_df, target_size, batch_size):
+    def create_feature_extraction_generators(self, train_df, test_df, target_size, batch_size):
+        train_feature_generator = self.feature_extraction_datagen.flow_from_dataframe(
+            dataframe = train_df,
+            x_col = X_COL,
+            y_col = PRED_COLUMN,
+            target_size = target_size,
+            class_mode = 'raw',
+            color_mode = 'rgb',
+            shuffle = False
+        )
+
+        test_feature_generator = self.feature_extraction_datagen.flow_from_dataframe(
+            dataframe = test_df,
+            x_col = X_COL,
+            y_col = PRED_COLUMN,
+            target_size = target_size,
+            class_mode = 'raw',
+            color_mode = 'rgb',
+            shuffle = False
+        )
+        return train_feature_generator, test_feature_generator
+
+    def create_generators(self, train_df, test_df, target_size, batch_size) -> Tuple:
         train_generator = self.train_datagen.flow_from_dataframe(
             dataframe = train_df.drop(columns=['standoff distance', 'x pos']),
             x_col = X_COL,
@@ -248,16 +276,13 @@ class CNN_model:
         self.train_df = self.df_reader.train_df
         self.test_df = self.df_reader.test_df
 
-    def create_model(self, base_model, custom_layers, feature_extraction=False):
+    def create_model(self, base_model, custom_layers):
         #Make it so the base model layers are untrainable
         base_model.trainable = False
 
         #Create the new model
         self.model = Sequential()
         self.model.add(base_model)
-        
-        if feature_extraction:
-            return self.model
 
         #Add custom layers to model
         for custom_layer in custom_layers:
@@ -284,7 +309,7 @@ class CNN_model:
             #del(cur_layer)
         return l
 
-    def grid_train(self, params_grid, layers, pooling):
+    def grid_train(self, params_grid, layers, pooling, cnn_pipeline):
         histories = []
         evaluations = []
         predictions = []
@@ -292,7 +317,15 @@ class CNN_model:
         print('params grid:', params_grid)
 
         for params in params_grid.values():
-            history, evaluation, prediction = self.train(params, layers=layers, pooling=pooling)
+            #Print statistics
+            print()
+            print('input shape:', params['shape'])
+            print('optimizer', params['optimizer'])
+            print('loss function', params['loss function'])
+            print('learning rate', params['learning rate'])
+            print('batch size', params['batch size'])
+
+            history, evaluation, prediction = self.train(params, layers=layers, pooling=pooling, cnn_pipeline=cnn_pipeline)
 
             #Append to list
             histories.append(history)
@@ -326,21 +359,13 @@ class CNN_model:
 
         return base_model, preprocessing_function
 
-    def train(self, params, layers, pooling, feature_extraction=False, data_augmentation=False):
-        #Print statistics
-        print()
-        print('input shape:', params['shape'])
-        print('optimizer', params['optimizer'])
-        print('loss function', params['loss function'])
-        print('learning rate', params['learning rate'])
-        print('batch size', params['batch size'])
-
+    def train(self, params, layers, pooling, pipeline):
         #Create the model
         base_model, preprocessing_function = self.base_model_mapping(params['base model'], pooling, params['shape'])
         model = self.create_model(base_model, self.create_layers(layers))
 
         #Create the generators based on the input shape
-        pipeline = Pipeline(preprocessing_function, self.train_df, self.test_df, params['shape'][:2], params['batch size'], feature_extraction=False, data_augmentation=data_augmentation)
+        pipeline.set_cnn_pipeline(preprocessing_function, self.train_df, self.test_df, params['shape'][:2], params['batch size'], feature_extraction=False)
         train_steps, valid_steps, test_steps = pipeline.train_generator.samples // params['batch size'], pipeline.valid_generator.samples // params['batch size'], pipeline.test_generator.samples // params['batch size']
 
         #Optimizer and loss function
@@ -559,6 +584,148 @@ class CNN_model:
                 plt.savefig(standoff_distances_folder + curr_standoff_dist_plot_path)
                 plt.close()
 
+class SVR_model:
+
+    def __init__(self, features_df) -> None:
+        self.features_df = shuffle(features_df)
+
+    def create_train_test_dfs(self) -> None:
+        self.train_df, self.test_df = train_test_split(self.features_df, shuffle=False, test_size=0.2)
+        
+        self.X_train = self.train_df.iloc[:, 4:]
+        self.Y_train = self.train_df.loc[:, 'width']
+        self.X_test = self.test_df.iloc[:, 4:]
+        self.Y_test = self.test_df.loc[:, 'width']
+    
+    def scale_features(self):
+        print(f"before scaling:", self.X_train.iloc[0,0])
+        self.scaler = StandardScaler()
+        self.X_train = pd.DataFrame(self.scaler.fit_transform(self.X_train))
+        self.X_test = pd.DataFrame(self.scaler.fit_transform(self.X_test))
+        print(f"after scaling:", self.X_train.iloc[0,0])
+
+    def pca(self, plot=False):
+        pca = PCA()
+        pca.fit(self.X_train)
+
+        accumulated_variance = np.array([np.sum(pca.explained_variance_ratio_[:i]) for i in range(self.X_train.shape[1])])
+
+        if plot:
+            plt.figure(figsize=(20,5))
+            plt.plot(range(1, len(accumulated_variance)+1), accumulated_variance, 'o-', linewidth=2, color='blue')
+            plt.title('Scree Plot')
+            plt.xlabel('Principal Component')
+            plt.ylabel('Variance Explained')
+            plt.show()
+        
+        n_components = np.argmax(accumulated_variance > 0.975)
+        reduction = (1 - (n_components / self.X_train.shape[1])) * 100
+        print(f"initial number of features: {self.X_train.shape[1]}, n_pca_components: {n_components} ,feature reduction %: {reduction:.3f}")
+        
+        print('Before pca:')
+        print('X_train shape:', self.X_train.shape)
+        print('X_test shape:', self.X_test.shape)
+
+        self.pca = PCA(n_components = n_components)
+        self.X_train = self.pca.fit_transform(self.X_train)
+        self.X_test = self.pca.transform(self.X_test)
+
+        print('After pca:')
+        print('X_train_pca shape:', self.X_train.shape)
+        print('X_test_pca shape:', self.X_test.shape)
+
+    def run_svr(self, kernel='rbf', C=1.0, gamma='scale', epsilon=0.1) -> None:
+        self.svr = SVR(kernel=kernel, C=C, gamma=gamma, epsilon=epsilon, verbose=True)
+        self.svr.fit(self.X_train, self.Y_train)
+
+    def score_svr(self):
+        self.r_squared = self.svr.score(self.X_test, self.Y_test)
+        print(f"r2: {self.r_squared}, svr params: {self.svr.get_params()}")
+
+    def predict_svr(self):
+        predictions = self.svr.predict(self.X_test)
+        self.test_df['predictions'] = predictions
+
+        #print(f"test_df columns", self.test_df.columns, 'head:', self.test_df.iloc[:10, :10])
+        self.test_df.to_csv('predictions_csv.csv')
+
+class Feature_extractor:
+
+    def __init__(self, filepath='C:\\Users\\victo\\Programming\\l-ded_ml_models\\files\\df_xpos_images.csv', reduce=None) -> None:
+        self.df_reader = DF_Reader(filepath=filepath, reduce=reduce)
+        self.df = self.df_reader.df
+        self.train_df = self.df_reader.train_df
+        self.test_df = self.df_reader.test_df
+
+    def base_model_mapping(self, base_model_str, pooling, input_shape_tuple):
+        if base_model_str == 'vgg16':
+            base_model = vgg16.VGG16(weights='imagenet', include_top=False, pooling=pooling, input_shape=input_shape_tuple)
+            preprocessing_function = vgg16.preprocess_input
+        elif base_model_str == 'resnet50':
+            base_model = ResNet50(weights='imagenet', include_top=False, pooling=pooling, input_shape=input_shape_tuple)
+            preprocessing_function = resnet.preprocess_input
+        elif base_model_str == 'resnet101':
+            base_model = ResNet101(weights='imagenet', include_top=False, pooling=pooling, input_shape=input_shape_tuple)
+            preprocessing_function = resnet.preprocess_input
+        elif base_model_str == 'resnet152':
+            base_model = ResNet152(weights='imagenet', include_top=False, pooling=pooling, input_shape=input_shape_tuple)
+            preprocessing_function = resnet.preprocess_input
+        elif base_model_str == 'densenet169':
+            base_model = DenseNet169(weights='imagenet', include_top=False, pooling=pooling, input_shape=input_shape_tuple)
+            preprocessing_function = densenet.preprocess_input
+        elif base_model_str == 'densenet201':
+            base_model = DenseNet201(weights='imagenet', include_top=False, pooling=pooling, input_shape=input_shape_tuple)
+            preprocessing_function = densenet.preprocess_input
+        
+        else:
+            raise Exception("base model not supported")
+
+        return base_model, preprocessing_function
+
+    def extract_features(self, params, pooling, pipeline) -> pd.DataFrame:
+        #Create the model
+        base_model, preprocessing_function = self.base_model_mapping(params['base model'], pooling, params['shape'])
+        model = self.create_model(base_model)
+
+        #Create the pipeline for extracting features, which just uses all images
+        #Create the generators based on the input shape
+        pipeline.set_cnn_pipeline(preprocessing_function, self.train_df, self.test_df, params['shape'][:2], params['batch size'], feature_extraction=True)
+
+        #Predict on the cnn with a batch size of 1, grab the output and return it each at a time
+        train_features = model.predict(
+            pipeline.train_feature_generator,
+            batch_size = params['batch size']
+        )
+        test_features = model.predict(
+            pipeline.test_feature_generator,
+            batch_size = params['batch size']
+        )
+
+        print(f"train_df shape: {self.train_df.shape}, features shape: {train_features.shape}")
+
+        train_features_df = pd.DataFrame(train_features)
+        test_features_df = pd.DataFrame(test_features)
+
+        features_1 = pd.concat([self.train_df, train_features_df], axis=1)
+        features_2 = pd.concat([self.test_df, test_features_df], axis=1)
+
+        features = pd.concat([features_1, features_2], ignore_index=True)
+
+        return features        
+
+    def create_features_df(self):
+        pass
+
+    def create_model(self, base_model) -> Sequential:
+        #Make it so the base model layers are untrainable
+        base_model.trainable = False
+
+        #Create the new model
+        self.model = Sequential()
+        self.model.add(base_model)
+        
+        return self.model
+
 #Adaptive learning rate
 def adapt_learning_rate(epoch, lr):
     if epoch < 8:
@@ -634,7 +801,7 @@ def params_grid_creator(base_models, loss_functions, optimizers_list, learning_r
             Dense(1, activation='linear')]'''
     
     #Display the grid for the user
-    print(pd.DataFrame(grid))
+    print("grid:", pd.DataFrame(grid))
     
     #Calculate number of iterations and ensure the result is in line with the inputs, otherwise raise an error
     number_of_iterations = len(base_models) * len(loss_functions) * len(optimizers_list) * len(learning_rates) * len(input_shapes) * len(epochs_list) * len(batch_sizes)
