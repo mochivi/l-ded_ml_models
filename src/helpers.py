@@ -144,7 +144,7 @@ class DF_Reader:
 
         #Create test columns and make sure they are balanced
         for index, inner_df in self.df.groupby(by='standoff distance'):
-            inner_train_df, inner_test_df = train_test_split(inner_df, test_size=0.2, shuffle=False)
+            inner_train_df, inner_test_df = train_test_split(inner_df, test_size=0.2)
             train_df = train_df.append(inner_train_df)
             test_df = test_df.append(inner_test_df)
 
@@ -158,7 +158,7 @@ class DF_Reader:
     def shuffle_train_test_dfs(self):
         self.train_df = shuffle(self.train_df)
         self.test_df = shuffle(self.test_df)
-        self.df = shuffle(self.df)
+        #self.df = shuffle(self.df)
 
     def reduce_dataset(self, reduce) -> pd.DataFrame:
         sampled_df = self.df.sample(n=reduce)
@@ -325,7 +325,7 @@ class CNN_model:
             print('learning rate', params['learning rate'])
             print('batch size', params['batch size'])
 
-            history, evaluation, prediction = self.train(params, layers=layers, pooling=pooling, cnn_pipeline=cnn_pipeline)
+            model, history, evaluation, prediction = self.train(params, layers=layers, pooling=pooling, pipeline=cnn_pipeline)
 
             #Append to list
             histories.append(history)
@@ -642,12 +642,16 @@ class SVR_model:
         self.r_squared = self.svr.score(self.X_test, self.Y_test)
         print(f"r2: {self.r_squared}, svr params: {self.svr.get_params()}")
 
-    def predict_svr(self):
+    def predict_svr(self, save_csv=False):
         predictions = self.svr.predict(self.X_test)
         self.test_df['predictions'] = predictions
 
         #print(f"test_df columns", self.test_df.columns, 'head:', self.test_df.iloc[:10, :10])
-        self.test_df.to_csv('predictions_csv.csv')
+        if save_csv:
+            self.test_df.to_csv('predictions_csv.csv')
+
+    def plot_results(self):
+        pass
 
 class Feature_extractor:
 
@@ -728,10 +732,11 @@ class Feature_extractor:
 
 #Adaptive learning rate
 def adapt_learning_rate(epoch, lr):
-    if epoch < 8:
+    if epoch < 5:
         return lr
     else:
-        return lr * tf.math.exp(-0.1)
+        return lr * 0.95
+        #return lr * tf.math.exp(-0.1)
 
 #R2 calculation for metrics
 def r2(y_true, y_pred):
