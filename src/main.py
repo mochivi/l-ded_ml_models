@@ -3,12 +3,12 @@ from helpers import *
 
 
 def main():    
-    layers_str = [#['flatten'],
-        ['dense', 512, 'relu'],
+    layers_str = [['flatten'],
+        ['dense', 256, 'relu'],
         #['dropout', 0.25],
-        ['dense', 1024, 'relu'],
-        #['dropout', 0.20],
         ['dense', 512, 'relu'],
+        #['dropout', 0.20],
+        ['dense', 256, 'relu'],
         #['dropout', 0.15],
         ['dense', 256, 'relu'],
         #['dropout', 0.10],
@@ -24,17 +24,17 @@ def main():
         #['dropout', 0.10],
         ['dense', 1, 'linear']]
 
-    params_grid = params_grid_creator(
-        base_models = ['vgg16'],
-        loss_functions = ['mae'],
+    '''params_grid = params_grid_creator(
+        base_models = ['densenet169'],
+        loss_functions = ['mse'],
         optimizers_list = ['adam'],
-        learning_rates = [0.001],
-        input_shapes = [(32,32,3)],
-        epochs_list = [60],
-        batch_sizes = [16]
-    )
+        learning_rates = [0.0005],
+        input_shapes = [(64,64,3)],
+        epochs_list = [100],
+        batch_sizes = [32]
+    )'''
 
-    def test_feature_extractor_svr():
+    def test_feature_extractor_svr(params_grid):
         feature_extractor = Feature_extractor(reduce=None)
         features = feature_extractor.extract_features(params=params, pooling='avg', pipeline=Pipeline(data_augmentation=False))
         
@@ -53,14 +53,20 @@ def main():
             
             break
 
-    def run_cnn():
+    def run_cnn(params_grid):
         cnn = CNN_model()
         cnn_pipeline = Pipeline(data_augmentation=False)
-        cnn.grid_train(params_grid, layers_str, pooling='avg', cnn_pipeline=cnn_pipeline)
+        cnn.grid_train(params_grid, layers_str, pooling=None, cnn_pipeline=cnn_pipeline)
 
-    run_cnn()
-    #test_feature_extractor_svr()
+    def new_spline_reg():
+        reg_creator = Regression_Creator() #Reads the d_before_spline csv file, which contains xpositions, labels and img paths
+        reg_creator.invert_second_line()
+        #reg_creator.apply_spline_regression(degree=5, knots=4, save=True) #Apply spline regression model and create the new dataframe
+        #reg_creator.save_new_images() #Checks if images with this degree and knots were already saved and if not, saves them
+
+    new_spline_reg()
+    #run_cnn(params_grid)
+    #test_feature_extractor_svr(params_grid)
     
-
 if __name__ == '__main__':
     main()

@@ -12,9 +12,9 @@ import scipy
 from datetime import datetime
 from typing import Tuple
 
+#Keras, tensorflow imports
 import tensorflow as tf
 from tensorflow import keras
-
 from keras import backend as K
 from keras.layers import Input, Lambda, Dense, Flatten, Dropout
 from keras.models import Model, Sequential
@@ -25,13 +25,19 @@ from keras.utils import image_dataset_from_directory
 from keras import optimizers
 from keras.losses import Huber
 
-
+#General sklearn imports
 from sklearn.model_selection import train_test_split, RandomizedSearchCV, KFold, cross_validate
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 from sklearn.svm import SVR
 from sklearn.utils import shuffle
 from sklearn.metrics import r2_score
+
+#Spline imports
+from sklearn.preprocessing import PolynomialFeatures, SplineTransformer
+from sklearn.pipeline import make_pipeline
+from sklearn.linear_model import Ridge
+import matplotlib.image
 
 #Ignore future warnings
 import warnings
@@ -47,11 +53,179 @@ class Regression_Creator:
     Input: d_befone_spline.csv
     Output: saves altered images to drive with the regression values to their filenames
     '''
+
     def __init__(self) -> None:
-        pass
+        self.bef_reg = pd.read_csv('C:\\Users\\victo\\Programming\\l-ded_ml_models\\files\\d_before_spline.csv', index_col=0)
+
+    def plot_spline(self, x_plot, y_plot, x_true, y_true, label, save=False, show=False):
+        #Plot curves
+        plt.plot(x_plot, y_plot, color='orange')
+        plt.scatter(x_true, y_true, color='black')
+        
+        #Save file to save location
+        if save:            
+            #Try creating dir to save spline images to
+            self.splines_save_dir = f'C:\\Users\\victo\\Programming\\l-ded_ml_models\\spline_plots\\plots_{self.degree}degrees_{self.knots}knots'
+            try:
+                os.mkdir(self.splines_save_dir)
+            except:
+                pass
+
+            #Setup filename
+            filename = self.splines_save_dir + f'\\spline_label_{int(np.round(label))}_{np.random.randint(low=0, high=1000000)}.jpg'
+
+            #Save images
+            plt.savefig(filename)
+
+        #Show figure of splines or not
+        if show:
+            plt.show()
+        else:
+            plt.close()
+
+    def invert_second_line(self):
+        invert = self.bef_reg.copy(deep=True)
+
+        prev_index = -1
+        count = 0
+        invert['line loc'] = [np.NaN] * invert.shape[0]
+        for index, row in invert.iterrows():
+            
+            #First iteration
+            if prev_index == -1:
+                prev_index = index
+                invert.loc[index, 'line loc'] = count
+                continue
+
+            if index != prev_index + 1:
+                count += 1
+
+            invert.loc[index, 'line loc'] = count
+            prev_index = index
+
+        new_df = pd.DataFrame()
+        #Now, we have a dataframe that has the values for each 
+        for label_name, df in invert.groupby(by='label'):
+            for line_loc, line_df in df.groupby(by='line loc'):
+                if line_loc % 2 == 0:
+                    new_df = pd.concat([new_df, line_df])
+                    continue
+                
+                img_path_list = line_df.iloc[::-1, 0].tolist()
+                img_path_list_reversed = reversed(img_path_list)
+                line_df.loc[:, 'img_path'] = img_path_list_reversed
+
+                #Invert all columns and append to new dataframe
+                new_df = pd.concat([new_df, line_df])
+
+        #Save new df to csv 
+        new_df.to_csv('invert.csv')
+    
+    def apply_spline_regression(self, degree, knots, alpha=1e-3, save=False, show=False):
+        self.degree = degree
+        self.knots = knots
+
+        #Create a copy of the dataframe before regression
+        self.after_reg = self.bef_reg.copy(deep=True)
+
+        #Loop over the dataframe for each label
+        for label_name, reg_df in self.bef_reg.groupby(by='label'):
+            spline_df = reg_df[~reg_df['local'].isnull()][['x pos', 'value', 'id for reg']]
+            
+            #define training points for spline
+            x_train = spline_df['x pos'].to_numpy()
+            y_train = spline_df['value'].to_numpy()
+            
+            #Reshape for input on pipeline
+            X_train = x_train[:, np.newaxis]
+            Y_train = y_train[:, np.newaxis]
+            
+            #Define and fit spline model on training data
+            spline_model =  make_pipeline(SplineTransformer(n_knots=knots, degree=degree), Ridge(alpha=alpha))
+            spline_model.fit(X_train, Y_train)
+            
+            #Prediction
+            x_pred = reg_df.loc[~reg_df['value'].isnull()]['x pos'].to_numpy()
+            X_pred = x_pred[:, np.newaxis] #Reshape for prediction
+            y_pred = spline_model.predict(X_pred) #Predict
+            
+            #plots
+            x_plot =  np.linspace(0, 140, 280)
+            X_plot = x_plot[:, np.newaxis]
+            y_plot = spline_model.predict(X_plot)
+
+            #Save plots
+            self.plot_spline(X_plot, y_plot, x_train, y_train, label_name, save=save, show=show)
+            
+            #write to main dataframe based on the indexes and the spline predictions
+            index_list = reg_df.loc[~reg_df['value'].isnull()].index.tolist()
+            for index, reg_value in zip(index_list, y_pred.tolist()):
+                self.after_reg.loc[index, 'reg value'] = reg_value
+
+    def modify_reg_df_for_saving(self):
+        #Create new columns for modifying file names later
+        self.after_reg['split_img_path'] = self.after_reg['img_path'].str.split('\\')
+        self.after_reg['filename_no_tiff'] = self.after_reg['split_img_path'].apply(lambda x: x[-1].split('.')[0])
+
+        #Function to apply to each element in the reg value column
+        def convert_str_width(x):
+            if np.isnan(x):
+                return str(x)
+            
+            x_times_million = float(x)*(10**6)
+            x_int = int(np.round(x_times_million))
+            return str(x_int).split('.')[0]
+        
+        #Apply function to convert regression value to str and multiply by 1 million, for reading purposes later
+        self.after_reg['width str'] = self.after_reg['reg value'].apply(convert_str_width)
+        self.after_reg.loc[73754, 'width str'] #seems good
+
+        #Function to convert x_pos column to str, extra functionality so it always has at least 3 digits after the '_'
+        def create_x_pos_str(x):
+            x = str(x)
+            x_split = x.split('.')
+            x_0 = x_split[0]
+            x_1 = x_split[1][:3]
+            if x_1 == '0':
+                x_1 = '000'
+            
+            return str(x_0) + '-' + str(x_1)
+        self.after_reg['x pos str'] = self.after_reg['x pos'].apply(create_x_pos_str)
+
+        #it works so lol, just creates a new column with a lot of string additions
+        self.after_reg['filename'] = self.after_reg['filename_no_tiff'] + (['_'] * self.after_reg.shape[0]) + self.after_reg['x pos str'].astype('str') + (['_'] * self.after_reg.shape[0]) + self.after_reg['width str'].astype('str') + (['.tiff'] * self.after_reg.shape[0])
+
+    def save_new_images(self):
+        self.modify_reg_df_for_saving()
+        #Create folders based on the label column, save images to that folder based on their respective labels
+        main_path = os.path.join(os.getcwd(), f'images\\{self.degree}degrees_{self.knots}knots')
+
+        try:
+            os.mkdir(main_path)
+        except:
+            print("Directory already exists, images already saved for this degree and knots")
+            return
+
+        #Create folders based on all labels, astype int and then str to remove any decimal digits from the folder name
+        for folder in self.after_reg['label'].astype('int32').astype('str').unique():
+            folder_path = os.path.join(main_path, folder)
+            try:
+                os.mkdir(folder_path)
+            except:
+                continue
+
+        for index, row in self.after_reg.iterrows():
+            #create folder path, try accessing the folder name and write it if you read an error
+            filename = str(row['filename'])
+            label_folder = str(int(row['label']))
+            save_path = main_path + '\\' + label_folder + '\\' + filename
+            
+            #with the folders created, save the images inside them (this takes around 10-15 mins)
+            array = cv2.imread(row['img_path'] ,cv2.IMREAD_GRAYSCALE)
+            array_cut = array[135:305 , 130:300]
+            matplotlib.image.imsave(save_path, array_cut, cmap='gray')
 
 class DF_Creator:
-
     def __init__(self, dir_path='C:\\Users\\victo\\Programming\\l-ded_ml_models\\images\\images_xpos', save_path=None) -> None:
         #Sets up the directories for the data to be extracted from
         self.DATADIR = []
@@ -377,7 +551,7 @@ class CNN_model:
         #Loss function definition
         loss_function = params['loss function']
         if loss_function == 'huber_loss':
-            loss_function = tf.keras.losses.Huber(delta=5.0)
+            loss_function = Huber(delta=5.0)
 
         #Adaptive learning rate
         my_lr_scheduler = keras.callbacks.LearningRateScheduler(adapt_learning_rate)
@@ -735,8 +909,8 @@ def adapt_learning_rate(epoch, lr):
     if epoch < 5:
         return lr
     else:
-        return lr * 0.95
-        #return lr * tf.math.exp(-0.1)
+        #return lr * 0.95
+        return lr * tf.math.exp(-0.1)
 
 #R2 calculation for metrics
 def r2(y_true, y_pred):
