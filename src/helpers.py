@@ -111,15 +111,18 @@ class Regression_Creator:
                     new_df = pd.concat([new_df, line_df])
                     continue
                 
-                img_path_list = line_df.iloc[::-1, 0].tolist()
-                img_path_list_reversed = reversed(img_path_list)
-                line_df.loc[:, 'img_path'] = img_path_list_reversed
+                #Reverse only 1 column in the dataframe, it works, other, more obvious methods don't, I'm not losing any more time to this
+                temp_df = line_df.copy(deep=True)
+                img_path_list = line_df.iloc[:, 0].tolist()
+                img_path_list_reversed = img_path_list[::-1]
+                temp_df.loc[:, 'img_path'] = img_path_list_reversed                
 
                 #Invert all columns and append to new dataframe
-                new_df = pd.concat([new_df, line_df])
+                new_df = pd.concat([new_df, temp_df])
 
         #Save new df to csv 
         new_df.to_csv('invert.csv')
+        self.bef_reg = new_df.copy(deep=True)
     
     def apply_spline_regression(self, degree, knots, alpha=1e-3, save=False, show=False):
         self.degree = degree
