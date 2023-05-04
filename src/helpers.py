@@ -11,6 +11,7 @@ import pickle
 import scipy
 from datetime import datetime
 from typing import Tuple
+from pathlib import Path
 
 #Keras, tensorflow imports
 import tensorflow as tf
@@ -31,7 +32,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 from sklearn.svm import SVR
 from sklearn.utils import shuffle
-from sklearn.metrics import r2_score
+from sklearn.metrics import r2_score, mean_absolute_error, mean_absolute_percentage_error
 
 #Spline imports
 from sklearn.preprocessing import PolynomialFeatures, SplineTransformer
@@ -44,9 +45,17 @@ import warnings
 warnings.simplefilter(action='ignore', category=FutureWarning)
 pd.options.mode.chained_assignment = None # default = 'warn'
 
-#GLOBAL PARAMS
-PRED_COLUMN = 'width'
-X_COL = 'img_path'
+sns.set_style('dark')
+
+def update_global_params(scale_y):
+    global PRED_COLUMN
+    global X_COL
+
+    if scale_y:
+        PRED_COLUMN = 'width scaled'
+    else:
+        PRED_COLUMN = 'width'
+    X_COL = 'img_path'
 
 class Regression_Creator:
     '''
@@ -83,7 +92,7 @@ class Regression_Creator:
         else:
             plt.close()
 
-    def invert_second_line(self):
+    def invert_second_line(self, drop_second_line=False):
         invert = self.bef_reg.copy(deep=True)
 
         prev_index = -1
@@ -109,6 +118,8 @@ class Regression_Creator:
             for line_loc, line_df in df.groupby(by='line loc'):
                 if line_loc % 2 == 0:
                     new_df = pd.concat([new_df, line_df])
+                    continue
+                elif drop_second_line:
                     continue
                 
                 #Reverse only 1 column in the dataframe, it works, other, more obvious methods don't, I'm not losing any more time to this
@@ -181,7 +192,6 @@ class Regression_Creator:
         
         #Apply function to convert regression value to str and multiply by 1 million, for reading purposes later
         self.after_reg['width str'] = self.after_reg['reg value'].apply(convert_str_width)
-        self.after_reg.loc[73754, 'width str'] #seems good
 
         #Function to convert x_pos column to str, extra functionality so it always has at least 3 digits after the '_'
         def create_x_pos_str(x):
@@ -297,7 +307,7 @@ class DF_Creator:
 
 class DF_Reader:
 
-    def __init__(self, filepath='C:\\Users\\victo\\Programming\\l-ded_ml_models\\files\\df_xpos_images.csv', shuffle=True, reduce=None) -> None:
+    def __init__(self, filepath='C:\\Users\\victo\\Programming\\l-ded_ml_models\\files\\df_xpos_images.csv', shuffle=True, reduce=None, width_divide=None, scale_y=False) -> None:
         self.df = pd.read_csv(filepath, index_col=0)
 
         #Reset index and drop null values
@@ -307,9 +317,27 @@ class DF_Reader:
         #If use samples dataset
         if reduce is not None:
             self.df = self.reduce_dataset(reduce)
+
+        if width_divide is not None:
+            self.df['width'] = self.df['width'] / width_divide
         
         #Create train test dfs
         self.train_df, self.test_df = self.create_train_test_dfs()
+
+        #Apply standard scaling to labels, if set to true
+        if scale_y:
+            
+            self.y_scaler = StandardScaler()
+            #self.train_df.loc[:, PRED_COLUMN] = self.y_scaler.fit_transform(y=self.train_df[PRED_COLUMN].to_numpy().reshape(-1,1)).reshape(-1)
+            self.train_df.loc[:, 'width scaled'] = self.y_scaler.fit_transform(self.train_df['width'].to_numpy().reshape(-1,1)).reshape(-1)
+            self.test_df.loc[:, 'width scaled'] = self.test_df['width']
+            
+            print('before scaling, train:',  self.train_df['width'].shape, self.train_df['width'][0])
+            print('after scaling, train:', self.train_df['width scaled'].shape, self.train_df['width scaled'][0])
+
+            #sanity check
+            #sanity = self.train_df.copy(deep=True)
+            #sanity.to_csv(os.path.join(Path(os.getcwd()), 'sanity.csv'))
 
         #Shuffle train test dfs inplace
         self.shuffle_train_test_dfs()
@@ -321,7 +349,7 @@ class DF_Reader:
 
         #Create test columns and make sure they are balanced
         for index, inner_df in self.df.groupby(by='standoff distance'):
-            inner_train_df, inner_test_df = train_test_split(inner_df, test_size=0.2)
+            inner_train_df, inner_test_df = train_test_split(inner_df, test_size=0.1)
             train_df = train_df.append(inner_train_df)
             test_df = test_df.append(inner_test_df)
 
@@ -348,15 +376,15 @@ class Pipeline:
     def __init__(self, data_augmentation=False) -> None:
         self.data_augment = data_augmentation
 
-    def set_cnn_pipeline(self, preprocessing_function, train_df, test_df, target_size, batch_size, feature_extraction) -> None:
+    def set_cnn_pipeline(self, preprocessing_function, train_df, test_df, target_size, batch_size, feature_extraction, val_split=0.2) -> None:
         self.feature_extraction = feature_extraction
         self.preprocessing_function = preprocessing_function
 
         if self.feature_extraction:
-            self.feature_extraction_datagen = self.create_datagens()
+            self.feature_extraction_datagen = self.create_datagens(val_split=val_split)
             self.train_feature_generator, self.test_feature_generator = self.create_feature_extraction_generators(train_df, test_df, target_size, batch_size)
         else:
-            self.train_datagen, self.test_datagen = self.create_datagens()
+            self.train_datagen, self.test_datagen = self.create_datagens(val_split=val_split)
             self.train_generator, self.valid_generator, self.test_generator = self.create_generators(train_df, test_df, target_size, batch_size)
 
     def create_datagens(self, rescale=(1/255.0), val_split=0.2) -> Tuple:
@@ -447,8 +475,9 @@ class Pipeline:
         return train_generator, valid_generator, test_generator
 
 class CNN_model:
-    def __init__(self, filepath='C:\\Users\\victo\\Programming\\l-ded_ml_models\\files\\df_xpos_images.csv') -> None:
-        self.df_reader = DF_Reader(filepath=filepath)
+    def __init__(self, filepath='C:\\Users\\victo\\Programming\\l-ded_ml_models\\files\\df_xpos_images.csv', reduce=None, width_divide=None, scale_y=False) -> None:
+        self.scale_y = scale_y
+        self.df_reader = DF_Reader(filepath=filepath, reduce=reduce, width_divide=width_divide, scale_y=scale_y)
         self.df = self.df_reader.df
         self.train_df = self.df_reader.train_df
         self.test_df = self.df_reader.test_df
@@ -486,7 +515,7 @@ class CNN_model:
             #del(cur_layer)
         return l
 
-    def grid_train(self, params_grid, layers, pooling, cnn_pipeline):
+    def grid_train(self, params_grid, layers, pooling, cnn_pipeline, val_split, scale_y=False):
         histories = []
         evaluations = []
         predictions = []
@@ -502,7 +531,7 @@ class CNN_model:
             print('learning rate', params['learning rate'])
             print('batch size', params['batch size'])
 
-            model, history, evaluation, prediction = self.train(params, layers=layers, pooling=pooling, pipeline=cnn_pipeline)
+            model, history, evaluation, prediction = self.train(params, layers=layers, pooling=pooling, pipeline=cnn_pipeline, val_split=val_split)
 
             #Append to list
             histories.append(history)
@@ -536,13 +565,13 @@ class CNN_model:
 
         return base_model, preprocessing_function
 
-    def train(self, params, layers, pooling, pipeline):
+    def train(self, params, layers, pooling, pipeline, val_split):
         #Create the model
         base_model, preprocessing_function = self.base_model_mapping(params['base model'], pooling, params['shape'])
         model = self.create_model(base_model, self.create_layers(layers))
 
         #Create the generators based on the input shape
-        pipeline.set_cnn_pipeline(preprocessing_function, self.train_df, self.test_df, params['shape'][:2], params['batch size'], feature_extraction=False)
+        pipeline.set_cnn_pipeline(preprocessing_function, self.train_df, self.test_df, params['shape'][:2], params['batch size'], feature_extraction=False, val_split=val_split)
         train_steps, valid_steps, test_steps = pipeline.train_generator.samples // params['batch size'], pipeline.valid_generator.samples // params['batch size'], pipeline.test_generator.samples // params['batch size']
 
         #Optimizer and loss function
@@ -560,7 +589,7 @@ class CNN_model:
         my_lr_scheduler = keras.callbacks.LearningRateScheduler(adapt_learning_rate)
         
         #Compile the model
-        model.compile(optimizer=optimizer, loss=loss_function, metrics=['mae', 'mse', tf.keras.metrics.RootMeanSquaredError(), tf.keras.metrics.MeanAbsolutePercentageError(), r2])
+        model.compile(optimizer=optimizer, loss=loss_function, metrics=['mae', 'mse', tf.keras.metrics.RootMeanSquaredError(), tf.keras.metrics.MeanAbsolutePercentageError()])
         model.summary()
 
         #Train the model
@@ -606,22 +635,67 @@ class CNN_model:
         #Save mse, mae and r2 plots
         self.save_mse_plot(history, directory)
         self.save_mae_plot(history, directory)
-        self.save_r2_plot(history, directory)
+        #self.save_r2_plot(history, directory)
+        
+        if self.scale_y:
+            prediction = self.df_reader.y_scaler.inverse_transform(prediction)
+
+        #Reshape prediction into 1D array
+        prediction = prediction.reshape(-1)
 
         #Create eval_results_df
-        eval_tuples = list(zip(self.test_df['standoff distance'], self.test_df['width'], self.test_df['x pos'], prediction))
+        eval_tuples = list(zip(self.test_df['standoff distance'], self.test_df[PRED_COLUMN], self.test_df['x pos'], prediction))
         self.eval_results_df = pd.DataFrame(eval_tuples, columns=['standoff distance', 'true', 'x pos', 'pred'])
-
-        #Fix the prediction column which comes inside a list for some fucking reason
-        self.eval_results_df['pred'] = self.eval_results_df['pred'].apply(lambda x: x[0])
 
         #save eval results df to disk
         self.eval_results_df.to_csv(directory + '\\eval_results_df.csv')
+
+        #Calculate R2 for all standoff distances and overall as well
+        self.calculate_r2(directory)
+        self.calculate_mae(directory)
 
         #Create other plots
         self.save_true_vs_pred_plot(directory)
         self.save_mean_true_vs_pred_plot(directory)
         self.save_width_over_x_plot(directory, adjusted=True)
+
+    def calculate_r2(self, directory):
+        r2_dict = {}
+
+        #Overall r2_score
+        r2_dict['overall'] = r2_score(self.eval_results_df['true'].to_numpy(), self.eval_results_df['pred'].to_numpy())
+
+        print(f"r2 overall: {r2_dict['overall']}")
+
+        for standoff_dist, df in self.eval_results_df.groupby(by='standoff distance'):
+            df.sort_values(by='x pos', inplace=True)
+            r2_dict[standoff_dist] = r2_score(df['true'].to_numpy(), df['pred'].to_numpy())
+
+        filename = directory + '\\r2_dict.txt'
+        with open(filename, 'w') as file:
+            #file.write(json.dumps(r2_dict))
+            for k, v in r2_dict.items():
+                file.write(f"{str(k)}: {str(v)} \n")
+
+    def calculate_mae(self, directory):
+        mae_dict = {}
+        mape_dict = {}
+
+        y_true = self.eval_results_df['true'].to_numpy()
+        y_pred = self.eval_results_df['pred'].to_numpy()
+
+        mae_dict['mae_overall'] = mean_absolute_error(y_true, y_pred)
+        mape_dict['mape_overall'] = mean_absolute_percentage_error(y_true, y_pred) * 100
+
+        print('mae overall:', mae_dict['mae_overall'])
+        print('mape overall:', mape_dict['mape_overall'])
+
+        filename = directory + '\\mae_dict.txt'
+        with open(filename, 'w') as file:
+            for k, v in mae_dict.items():
+                file.write(f"{str(k)}: {str(v)} \n")
+            for k, v in mape_dict.items():
+                file.write(f"{str(k)}: {str(v)} \n")
 
     def save_pickle_history(self, history, directory):
         pickle_filename = directory + '\\history.pkl'
@@ -682,13 +756,18 @@ class CNN_model:
         true_vs_pred_plot_name = '\\true_vs_pred_lineplot.png'
         true_vs_pred_plot_path = directory + true_vs_pred_plot_name
 
+        #Figure size
+        plt.figure(figsize=(15,15))
+
         #Create the true vs pred plot
         sns.scatterplot(data=self.eval_results_df, x='true', y='pred', s=5, color='b')
-        sns.lineplot(x=np.arange(self.eval_results_df['true'].min(), self.eval_results_df['true'].max()), y=np.arange(self.eval_results_df['true'].min(), self.eval_results_df['true'].max()), color='black')
-        
+        #sns.lineplot(x=np.arange(self.eval_results_df['true'].min(), self.eval_results_df['true'].max()), y=np.arange(self.eval_results_df['true'].min(), self.eval_results_df['true'].max()), color='black')
+        sns.lineplot(x=np.linspace(0,1,1), y=np.linspace(0,1,1), color='black')
+
         #Define lower, upper bounds for x and y
         xy_min = min(self.eval_results_df['true'].min(), self.eval_results_df['pred'].min())
         xy_max = max(self.eval_results_df['true'].max(), self.eval_results_df['pred'].max())
+
         plt.xlim([xy_min, xy_max])
         plt.ylim([xy_min, xy_max])
         
@@ -700,11 +779,14 @@ class CNN_model:
         standoff_x_plot_name = '\\standoff_x_lineplot.png'
         standoff_x_plot_path = directory + standoff_x_plot_name
 
+        #Figure size
+        plt.figure(figsize=(16,12))
+
         standoff_grouped_true = self.eval_results_df.groupby('standoff distance')['true', 'pred'].mean()
         sns.scatterplot(data=self.eval_results_df, x='standoff distance', y='pred', s=5, color='b', label='predicted points')
         sns.lineplot(data=standoff_grouped_true, x=standoff_grouped_true.index, y='true', color='g', label='true mean')
         sns.lineplot(data=standoff_grouped_true, x=standoff_grouped_true.index, y='pred', color='black', label='pred mean')
-        plt.legend(loc='lower right')
+        plt.legend(loc='lower left')
         plt.savefig(standoff_x_plot_path)
         plt.close()
 
@@ -716,13 +798,18 @@ class CNN_model:
             df.sort_values(by='x pos', inplace=True, ascending=True)
             
             plt.figure(figsize=(20,6))
-            plt.ylim([600,1050])
+            #plt.ylim([600,1050])
+            plt.ylim([0.6, 1.050])
             
-            sns.pointplot(data=df, x='x pos', y='true', color='black', label='true')
-            sns.pointplot(data=df, x='x pos', y='pred', color='orange', label='pred')
+            try:
+                sns.lineplot(x=np.linspace(0, 136, 136), y=[0]*136)
+            except:
+                pass
+            sns.lineplot(data=df, x='x pos', y='true', color='black', label='true')
+            sns.lineplot(data=df, x='x pos', y='pred', color='orange', label='pred')
             
             plt.xticks(rotation=45)
-            plt.locator_params(axis='x', nbins=5)
+            plt.locator_params(axis='x', nbins=10)
             plt.title(f'standoff distance: {standoff_distance}')
             plt.legend(loc='lower right')
 
@@ -737,19 +824,22 @@ class CNN_model:
 
                 #figure configs
                 plt.figure(figsize=(20,6))
-                plt.ylim([-550,550])
+                #plt.ylim([-550,550])
+                plt.ylim([-0.55, 0.55])
 
                 #calculate adjusted y values
+                x_pos = df['x pos'].to_numpy()
                 true_over = df['true'].to_numpy() / 2
                 true_under = df['true'].to_numpy() / -2
                 pred_over = df['pred'].to_numpy() / 2
                 pred_under = df['pred'].to_numpy() / -2
 
                 #plot data
-                sns.lineplot(x=np.linspace(0, 135.33, df.shape[0]).astype('int'), y=true_over, color='black', label='true over')
-                sns.lineplot(x=np.linspace(0, 135.33, df.shape[0]).astype('int'), y=pred_over, color='orange', label='pred over')
-                sns.lineplot(x=np.linspace(0, 135.33, df.shape[0]).astype('int'), y=true_under, color='black', label='true under')
-                sns.lineplot(x=np.linspace(0, 135.33, df.shape[0]).astype('int'), y=pred_under, color='orange', label='pred under')
+                sns.lineplot(x=x_pos, y=true_over, color='black', label='true over')
+                sns.lineplot(x=x_pos, y=pred_over, color='orange', label='pred over')
+                sns.lineplot(x=x_pos, y=true_under, color='black', label='true under')
+                sns.lineplot(x=x_pos, y=pred_under, color='orange', label='pred under')
+                #sns.lineplot(x=np.linspace(0, 135.33, df.shape[0]).astype('int'), y=pred_under, color='orange', label='pred under')
 
                 #plot configs
                 plt.locator_params(axis='x', nbins=13)
@@ -770,9 +860,9 @@ class SVR_model:
         self.train_df, self.test_df = train_test_split(self.features_df, shuffle=False, test_size=0.2)
         
         self.X_train = self.train_df.iloc[:, 4:]
-        self.Y_train = self.train_df.loc[:, 'width']
+        self.Y_train = self.train_df.loc[:, PRED_COLUMN]
         self.X_test = self.test_df.iloc[:, 4:]
-        self.Y_test = self.test_df.loc[:, 'width']
+        self.Y_test = self.test_df.loc[:, PRED_COLUMN]
     
     def scale_features(self):
         print(f"before scaling:", self.X_train.iloc[0,0])
@@ -832,8 +922,8 @@ class SVR_model:
 
 class Feature_extractor:
 
-    def __init__(self, filepath='C:\\Users\\victo\\Programming\\l-ded_ml_models\\files\\df_xpos_images.csv', reduce=None) -> None:
-        self.df_reader = DF_Reader(filepath=filepath, reduce=reduce)
+    def __init__(self, filepath='C:\\Users\\victo\\Programming\\l-ded_ml_models\\files\\df_xpos_images.csv', reduce=None, scale_y=False) -> None:
+        self.df_reader = DF_Reader(filepath=filepath, reduce=reduce, scale_y=scale_y)
         self.df = self.df_reader.df
         self.train_df = self.df_reader.train_df
         self.test_df = self.df_reader.test_df
@@ -893,9 +983,6 @@ class Feature_extractor:
         features = pd.concat([features_1, features_2], ignore_index=True)
 
         return features        
-
-    def create_features_df(self):
-        pass
 
     def create_model(self, base_model) -> Sequential:
         #Make it so the base model layers are untrainable
