@@ -17,9 +17,10 @@ from pathlib import Path
 import tensorflow as tf
 from tensorflow import keras
 from keras import backend as K
-from keras.layers import Input, Lambda, Dense, Flatten, Dropout
+#from keras.layers import Input, Lambda, Dense, Flatten, Dropout
+from keras.layers.core import Dense, Flatten, Dropout
 from keras.models import Model, Sequential
-from keras.applications import vgg16, ResNet50, resnet, densenet, DenseNet169, DenseNet201, ResNet101, ResNet152
+from keras.applications import vgg16, vgg19, ResNet50, resnet, densenet, DenseNet169, DenseNet201, ResNet101, ResNet152
 from keras.preprocessing import image
 from keras.preprocessing.image import ImageDataGenerator
 from keras.utils import image_dataset_from_directory
@@ -45,7 +46,7 @@ import warnings
 warnings.simplefilter(action='ignore', category=FutureWarning)
 pd.options.mode.chained_assignment = None # default = 'warn'
 
-sns.set_style('dark')
+sns.set_style('whitegrid')
 
 def update_global_params(scale_y):
     global PRED_COLUMN
@@ -68,10 +69,13 @@ class Regression_Creator:
 
     def plot_spline(self, x_plot, y_plot, x_true, y_true, label, save=False, show=False):
         #Plot curves
-        plt.plot(x_plot, y_plot, color='orange')
-        plt.scatter(x_true, y_true, color='black')
+        plt.plot(x_plot, y_plot, color='orange', label='Predicted spline')
+        plt.scatter(x_true, y_true, color='black', label='Measured points')
+        plt.title('Spline adjustment of non-measured points')
+        plt.legend()
         
         #Save file to save location
+        save=True
         if save:            
             #Try creating dir to save spline images to
             self.splines_save_dir = f'C:\\Users\\victo\\Programming\\l-ded_ml_models\\spline_plots\\plots_{self.degree}degrees_{self.knots}knots'
@@ -330,17 +334,21 @@ class DF_Reader:
             self.y_scaler = StandardScaler()
             #self.train_df.loc[:, PRED_COLUMN] = self.y_scaler.fit_transform(y=self.train_df[PRED_COLUMN].to_numpy().reshape(-1,1)).reshape(-1)
             self.train_df.loc[:, 'width scaled'] = self.y_scaler.fit_transform(self.train_df['width'].to_numpy().reshape(-1,1)).reshape(-1)
-            self.test_df.loc[:, 'width scaled'] = self.test_df['width']
+            #self.test_df.loc[:, 'width scaled'] = self.test_df['width']
+            self.test_df.loc[:, 'width scaled'] = self.y_scaler.transform(self.test_df.loc[:, 'width'].to_numpy().reshape(-1,1)).reshape(-1)
             
             print('before scaling, train:',  self.train_df['width'].shape, self.train_df['width'][0])
             print('after scaling, train:', self.train_df['width scaled'].shape, self.train_df['width scaled'][0])
 
             #sanity check
-            #sanity = self.train_df.copy(deep=True)
-            #sanity.to_csv(os.path.join(Path(os.getcwd()), 'sanity.csv'))
+            sanity = self.test_df.copy(deep=True)
+            sanity.to_csv(os.path.join(Path(os.getcwd()), 'sanity.csv'))
+            sanity.loc[:,'width scaled'] = self.y_scaler.inverse_transform(self.test_df.loc[:, 'width scaled'].to_numpy().reshape(-1,1)).reshape(-1)
+            sanity.to_csv(os.path.join(Path(os.getcwd()), 'sanity2.csv'))
 
         #Shuffle train test dfs inplace
-        self.shuffle_train_test_dfs()
+        if shuffle:
+            self.shuffle_train_test_dfs()
 
     #Create the train, test dataframes
     def create_train_test_dfs(self) -> Tuple:
@@ -349,9 +357,12 @@ class DF_Reader:
 
         #Create test columns and make sure they are balanced
         for index, inner_df in self.df.groupby(by='standoff distance'):
-            inner_train_df, inner_test_df = train_test_split(inner_df, test_size=0.1)
-            train_df = train_df.append(inner_train_df)
-            test_df = test_df.append(inner_test_df)
+            inner_train_df, inner_test_df = train_test_split(inner_df, test_size=0.20, random_state=42)
+            
+            #train_df = train_df.append(inner_train_df)
+            #test_df = test_df.append(inner_test_df)
+            train_df = pd.concat([train_df, inner_train_df], axis='index')
+            test_df = pd.concat([test_df, inner_train_df], axis='index')
 
         #Reset indexes of train and test datasets
         train_df.reset_index(drop=True, inplace=True)
@@ -387,7 +398,7 @@ class Pipeline:
             self.train_datagen, self.test_datagen = self.create_datagens(val_split=val_split)
             self.train_generator, self.valid_generator, self.test_generator = self.create_generators(train_df, test_df, target_size, batch_size)
 
-    def create_datagens(self, rescale=(1/255.0), val_split=0.2) -> Tuple:
+    def create_datagens(self, rescale=(1./255), val_split=0.2) -> Tuple:
         #If extract features from the CNN
         if self.feature_extraction:
             feature_extraction_datagen = ImageDataGenerator(
@@ -506,7 +517,10 @@ class CNN_model:
             if layer_type == 'flatten':
                 cur_layer = Flatten()
             elif layer_type == 'dense':
-                cur_layer = Dense(layer[1], activation=layer[2])
+                if layer[2] == 'linear':
+                    cur_layer = Dense(units=layer[1], use_bias=False)
+                else:
+                    cur_layer = Dense(units=layer[1], activation=layer[2])
             elif layer_type == 'dropout':
                 cur_layer = Dropout(rate=layer[1])
             else:
@@ -559,7 +573,9 @@ class CNN_model:
         elif base_model_str == 'densenet201':
             base_model = DenseNet201(weights='imagenet', include_top=False, pooling=pooling, input_shape=input_shape_tuple)
             preprocessing_function = densenet.preprocess_input
-        
+        elif base_model_str == 'vgg19':
+            base_model = vgg19.VGG19(weights='imagenet', include_top=False, pooling=pooling, input_shape=input_shape_tuple)
+            preprocessing_function = vgg19.preprocess_input
         else:
             raise Exception("base model not supported")
 
@@ -589,8 +605,12 @@ class CNN_model:
         my_lr_scheduler = keras.callbacks.LearningRateScheduler(adapt_learning_rate)
         
         #Compile the model
-        model.compile(optimizer=optimizer, loss=loss_function, metrics=['mae', 'mse', tf.keras.metrics.RootMeanSquaredError(), tf.keras.metrics.MeanAbsolutePercentageError()])
+        model.compile(optimizer=optimizer, loss=loss_function, metrics=['mae', 'mse'])#, tf.keras.metrics.RootMeanSquaredError(), tf.keras.metrics.MeanAbsolutePercentageError()])
         model.summary()
+
+        #Set lr callback
+        reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(
+            monitor='val_loss', factor=0.25, patience=4, min_lr=0.00000005)
 
         #Train the model
         history = model.fit(pipeline.train_generator, 
@@ -599,7 +619,8 @@ class CNN_model:
                             steps_per_epoch = train_steps, 
                             validation_data = pipeline.valid_generator, 
                             validation_steps = valid_steps, 
-                            callbacks=[my_lr_scheduler], verbose=1)
+                            callbacks=[reduce_lr], 
+                            verbose=1)
         
         #Evaluate the model
         evaluation = model.evaluate(pipeline.test_generator,
@@ -620,7 +641,7 @@ class CNN_model:
 
         #Create directory for all information to be stored in
         datetime_str = str(datetime.now().strftime('%Y-%m-%d_%H_%M_%S'))
-        directory = 'D:\\Users\\Victor\\Área de Trabalho\\train_history\\history_' + datetime_str
+        directory = 'D:\\Users\\Victor\\Área de Trabalho\\train_history\\7d8k\\history_' + datetime_str
         os.mkdir(directory)
 
         #Save history as pkl file to directory
@@ -638,7 +659,10 @@ class CNN_model:
         #self.save_r2_plot(history, directory)
         
         if self.scale_y:
-            prediction = self.df_reader.y_scaler.inverse_transform(prediction)
+            # scaled_prediction = prediction.reshape(-1)
+            # scaled_test = self.test_df.loc[:, PRED_COLUMN].to_numpy().reshape(-1)
+            prediction = self.df_reader.y_scaler.inverse_transform(prediction.reshape(-1,1))
+            self.test_df.loc[:, PRED_COLUMN] = self.df_reader.y_scaler.inverse_transform(self.test_df.loc[:, PRED_COLUMN].to_numpy().reshape(-1,1)).reshape(-1)
 
         #Reshape prediction into 1D array
         prediction = prediction.reshape(-1)
@@ -658,6 +682,16 @@ class CNN_model:
         self.save_true_vs_pred_plot(directory)
         self.save_mean_true_vs_pred_plot(directory)
         self.save_width_over_x_plot(directory, adjusted=True)
+
+        #Calculate some plots of the scaled results
+        #self.save_scaled_results_plot(directory, scaled_prediction, scaled_test)
+
+    # def save_scaled_results_plot(self, directory, scaled_prediction, scaled_test):
+    #     scaled_results_save_path = directory + '\\scaled_results.png'
+    #     sns.scatterplot(x=scaled_prediction, y=scaled_test, color='black', s=5)
+    #     plt.title('Distribution of the scaled results')
+    #     plt.legend()
+    #     plt.savefig(scaled_results_save_path)
 
     def calculate_r2(self, directory):
         r2_dict = {}
@@ -704,12 +738,13 @@ class CNN_model:
 
     def save_model_params(self, params, directory):
         print(f"params: {params}")
-        try:
-            model_params_df = pd.DataFrame.from_dict(params, orient='columns')
-            model_params_df.drop(columns='layers', inplace=True)
-            model_params_df.to_csv(directory + '\\model_params.csv')
-        except:
-            print('Error on saving model params')
+        
+        with open(directory + '\\params.txt', 'w') as file:
+            file.write(f'input shape: {repr(params["shape"])}\n')
+            file.write(f'optimizer:  {repr(params["optimizer"])}\n')
+            file.write(f'loss function: {repr(params["loss function"])}\n')
+            file.write(f'learning rate: {repr(params["learning rate"])}\n')
+            file.write(f'batch size: {repr(params["batch size"])}\n')
 
     def save_model_summary(self, model, directory):
         summary_path = directory + '\\modelsummary.txt'
@@ -756,23 +791,34 @@ class CNN_model:
         true_vs_pred_plot_name = '\\true_vs_pred_lineplot.png'
         true_vs_pred_plot_path = directory + true_vs_pred_plot_name
 
+        fig, (ax1, ax2) = plt.subplots(ncols=2)
+
         #Figure size
-        plt.figure(figsize=(15,15))
+        #plt.figure(figsize=(15,15))
+        fig.set_figwidth(30)
+        fig.set_figheight(15)
 
         #Create the true vs pred plot
-        sns.scatterplot(data=self.eval_results_df, x='true', y='pred', s=5, color='b')
+        sns.scatterplot(data=self.eval_results_df, x='true', y='pred', s=5, color='b', ax=ax1)
         #sns.lineplot(x=np.arange(self.eval_results_df['true'].min(), self.eval_results_df['true'].max()), y=np.arange(self.eval_results_df['true'].min(), self.eval_results_df['true'].max()), color='black')
-        sns.lineplot(x=np.linspace(0,1,1), y=np.linspace(0,1,1), color='black')
+        sns.kdeplot(data=self.eval_results_df, x='true', label='Distribution density of true measures', ax=ax2, color='black')
+        sns.kdeplot(data=self.eval_results_df, x='pred', label='Distribution density of predicted values', ax=ax2, color='b')
 
         #Define lower, upper bounds for x and y
         xy_min = min(self.eval_results_df['true'].min(), self.eval_results_df['pred'].min())
         xy_max = max(self.eval_results_df['true'].max(), self.eval_results_df['pred'].max())
 
-        plt.xlim([xy_min, xy_max])
-        plt.ylim([xy_min, xy_max])
+        ax1.set_xlim([xy_min, xy_max])
+        ax1.set_ylim([xy_min, xy_max])
+
+        ax1.set_title(label='True measures vs predicted values', fontdict={'fontsize': 12})
+        ax2.set_title(label='Distribution density of measures and predictions', fontdict={'fontsize': 12})
+
+        ax1.legend()
+        ax2.legend()
         
         #Save and show figure
-        plt.savefig(true_vs_pred_plot_path)
+        fig.savefig(true_vs_pred_plot_path)
         plt.close()
 
     def save_mean_true_vs_pred_plot(self, directory):
@@ -782,10 +828,11 @@ class CNN_model:
         #Figure size
         plt.figure(figsize=(16,12))
 
-        standoff_grouped_true = self.eval_results_df.groupby('standoff distance')['true', 'pred'].mean()
-        sns.scatterplot(data=self.eval_results_df, x='standoff distance', y='pred', s=5, color='b', label='predicted points')
-        sns.lineplot(data=standoff_grouped_true, x=standoff_grouped_true.index, y='true', color='g', label='true mean')
-        sns.lineplot(data=standoff_grouped_true, x=standoff_grouped_true.index, y='pred', color='black', label='pred mean')
+        standoff_grouped_true = self.eval_results_df.groupby('standoff distance')[['true', 'pred']].mean()
+        sns.scatterplot(data=self.eval_results_df, x='standoff distance', y='pred', s=5, color='b', label='Predicted values')
+        sns.lineplot(data=standoff_grouped_true, x=standoff_grouped_true.index, y='true', color='black', label='Mean of true measures over each standoff distance')
+        sns.lineplot(data=standoff_grouped_true, x=standoff_grouped_true.index, y='pred', color='g', label='Mean of predicted values over each standoff distance')
+        plt.title(f'Distribution of predicted values over each standoff distance against mean of true measures', fontdict={'fontsize': 12})
         plt.legend(loc='lower left')
         plt.savefig(standoff_x_plot_path)
         plt.close()
@@ -805,12 +852,13 @@ class CNN_model:
                 sns.lineplot(x=np.linspace(0, 136, 136), y=[0]*136)
             except:
                 pass
-            sns.lineplot(data=df, x='x pos', y='true', color='black', label='true')
-            sns.lineplot(data=df, x='x pos', y='pred', color='orange', label='pred')
+
+            sns.lineplot(data=df, x='x pos', y='true', color='black', label='True measures')
+            sns.lineplot(data=df, x='x pos', y='pred', color='orange', label='Predicted Values')
             
             plt.xticks(rotation=45)
             plt.locator_params(axis='x', nbins=10)
-            plt.title(f'standoff distance: {standoff_distance}')
+            plt.title(f'Standoff distance: {standoff_distance}', fontdict={'fontsize': 12})
             plt.legend(loc='lower right')
 
             #save each file to folder
@@ -844,7 +892,7 @@ class CNN_model:
                 #plot configs
                 plt.locator_params(axis='x', nbins=13)
                 plt.legend()
-                plt.title(f'standoff distance: {standoff_distance}')
+                plt.title(f'Reflected width for standoff distance: {standoff_distance}', fontdict={'fontsize': 12})
                 
                 #save each file to folder
                 curr_standoff_dist_plot_path = f'\\scaled_{standoff_distance}.png'
@@ -857,7 +905,7 @@ class SVR_model:
         self.features_df = shuffle(features_df)
 
     def create_train_test_dfs(self) -> None:
-        self.train_df, self.test_df = train_test_split(self.features_df, shuffle=False, test_size=0.2)
+        self.train_df, self.test_df = train_test_split(self.features_df, shuffle=False, test_size=0.15)
         
         self.X_train = self.train_df.iloc[:, 4:]
         self.Y_train = self.train_df.loc[:, PRED_COLUMN]
@@ -982,7 +1030,7 @@ class Feature_extractor:
 
         features = pd.concat([features_1, features_2], ignore_index=True)
 
-        return features        
+        return features
 
     def create_model(self, base_model) -> Sequential:
         #Make it so the base model layers are untrainable
@@ -996,11 +1044,12 @@ class Feature_extractor:
 
 #Adaptive learning rate
 def adapt_learning_rate(epoch, lr):
-    if epoch < 5:
+    if epoch < 10:
         return lr
     else:
-        #return lr * 0.95
-        return lr * tf.math.exp(-0.1)
+        #return lr * 0.85
+        return lr * 0.95
+        #return lr * tf.math.exp(-0.1)
 
 #R2 calculation for metrics
 def r2(y_true, y_pred):
@@ -1060,14 +1109,6 @@ def params_grid_creator(base_models, loss_functions, optimizers_list, learning_r
         remove = grid.pop(key, False)
         if remove == False:
             raise Exception("Key not removed")
-            
-    #Now add the layers to each value in the dict
-    '''for key in grid.keys():
-        grid[key]['layers'] = [Flatten(),
-            Dense(64, activation='relu'),
-            Dense(128, activation='relu'),
-            Dense(32, activation='relu'),
-            Dense(1, activation='linear')]'''
     
     #Display the grid for the user
     print("grid:", pd.DataFrame(grid))
