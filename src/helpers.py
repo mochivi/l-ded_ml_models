@@ -341,10 +341,10 @@ class DF_Reader:
             print('after scaling, train:', self.train_df['width scaled'].shape, self.train_df['width scaled'][0])
 
             #sanity check
-            sanity = self.test_df.copy(deep=True)
-            sanity.to_csv(os.path.join(Path(os.getcwd()), 'sanity.csv'))
-            sanity.loc[:,'width scaled'] = self.y_scaler.inverse_transform(self.test_df.loc[:, 'width scaled'].to_numpy().reshape(-1,1)).reshape(-1)
-            sanity.to_csv(os.path.join(Path(os.getcwd()), 'sanity2.csv'))
+            #sanity = self.test_df.copy(deep=True)
+            #sanity.to_csv(os.path.join(Path(os.getcwd()), 'sanity.csv'))
+            #sanity.loc[:,'width scaled'] = self.y_scaler.inverse_transform(self.test_df.loc[:, 'width scaled'].to_numpy().reshape(-1,1)).reshape(-1)
+            #sanity.to_csv(os.path.join(Path(os.getcwd()), 'sanity2.csv'))
 
         #Shuffle train test dfs inplace
         if shuffle:
@@ -357,12 +357,12 @@ class DF_Reader:
 
         #Create test columns and make sure they are balanced
         for index, inner_df in self.df.groupby(by='standoff distance'):
-            inner_train_df, inner_test_df = train_test_split(inner_df, test_size=0.20, random_state=42)
+            inner_train_df, inner_test_df = train_test_split(inner_df, test_size=0.20)
             
             #train_df = train_df.append(inner_train_df)
             #test_df = test_df.append(inner_test_df)
             train_df = pd.concat([train_df, inner_train_df], axis='index')
-            test_df = pd.concat([test_df, inner_train_df], axis='index')
+            test_df = pd.concat([test_df, inner_test_df], axis='index')
 
         #Reset indexes of train and test datasets
         train_df.reset_index(drop=True, inplace=True)
@@ -483,6 +483,9 @@ class Pipeline:
             color_mode = 'rgb',
             shuffle=False
         )
+
+        print(f"train gen samples {train_generator.samples}, test gen samples: {test_generator.samples}")
+
         return train_generator, valid_generator, test_generator
 
 class CNN_model:
@@ -587,8 +590,19 @@ class CNN_model:
         model = self.create_model(base_model, self.create_layers(layers))
 
         #Create the generators based on the input shape
-        pipeline.set_cnn_pipeline(preprocessing_function, self.train_df, self.test_df, params['shape'][:2], params['batch size'], feature_extraction=False, val_split=val_split)
-        train_steps, valid_steps, test_steps = pipeline.train_generator.samples // params['batch size'], pipeline.valid_generator.samples // params['batch size'], pipeline.test_generator.samples // params['batch size']
+        pipeline.set_cnn_pipeline(
+            preprocessing_function, 
+            self.train_df, 
+            self.test_df, 
+            params['shape'][:2], 
+            params['batch size'], 
+            feature_extraction=False, 
+            val_split=val_split)
+        train_steps, valid_steps, test_steps = (
+            pipeline.train_generator.samples // params['batch size'], 
+            pipeline.valid_generator.samples // params['batch size'], 
+            pipeline.test_generator.samples // params['batch size']
+        )
 
         #Optimizer and loss function
         if params['optimizer'] == 'adam':
@@ -605,12 +619,12 @@ class CNN_model:
         my_lr_scheduler = keras.callbacks.LearningRateScheduler(adapt_learning_rate)
         
         #Compile the model
-        model.compile(optimizer=optimizer, loss=loss_function, metrics=['mae', 'mse'])#, tf.keras.metrics.RootMeanSquaredError(), tf.keras.metrics.MeanAbsolutePercentageError()])
+        model.compile(optimizer=optimizer, loss=loss_function, metrics=['mae', 'mse'])
         model.summary()
 
         #Set lr callback
         reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(
-            monitor='val_loss', factor=0.25, patience=4, min_lr=0.00000005)
+            monitor='val_loss', factor=0.25, patience=3, min_lr=0.0000001)
 
         #Train the model
         history = model.fit(pipeline.train_generator, 

@@ -41,13 +41,21 @@ def main():
         cnn_pipeline = Pipeline(data_augmentation=False)
         cnn.grid_train(params_grid, layers=layers_str, pooling=pooling, cnn_pipeline=cnn_pipeline, val_split=val_split)
 
+    # layers_str = [['flatten'],
+    #     ['dense', 32, 'relu'],
+    #     ['dense', 512, 'relu'],
+    #     ['dense', 1024, 'relu'],
+    #     ['dense', 256, 'relu'],
+    #     ['dense', 128, 'relu'],
+    #     ['dense', 64, 'relu'],
+    #     ['dense', 32, 'relu'],
+    #     ['dense', 16, 'relu'],
+    #     ['dense', 1, 'linear']]
+
     layers_str = [['flatten'],
         ['dense', 16, 'relu'],
-        ['dense', 512, 'relu'],
-        ['dense', 1024, 'relu'],
-        ['dense', 256, 'relu'],
         ['dense', 128, 'relu'],
-        ['dense', 64, 'relu'],
+        ['dense', 256, 'relu'],
         ['dense', 32, 'relu'],
         ['dense', 16, 'relu'],
         ['dense', 1, 'linear']]
@@ -58,7 +66,7 @@ def main():
         optimizers_list = ['adam'],
         learning_rates = [0.00001],
         input_shapes = [(170,170,3)],
-        epochs_list = [20],
+        epochs_list = [25],
         batch_sizes = [8]
     )
 
